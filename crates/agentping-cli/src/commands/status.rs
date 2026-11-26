@@ -43,7 +43,13 @@ pub fn run(ctx: &Ctx) -> anyhow::Result<()> {
     let hooks = std::env::current_dir()
         .ok()
         .and_then(|cwd| settings_path(Scope::User, &cwd))
-        .and_then(|p| inspect(&p).ok())
+        .and_then(|p| {
+            inspect(
+                &p,
+                &agentping_agents::claude::install::managed_hooks(&config.remote),
+            )
+            .ok()
+        })
         .map(|s| s.is_complete());
     let providers: Vec<String> = config
         .providers
@@ -93,6 +99,10 @@ pub fn run(ctx: &Ctx) -> anyhow::Result<()> {
             None => ui::status_word("unknown", None),
         },
     );
+    if config.remote.enabled {
+        let remote = remote_status(ctx, config, daemon.running);
+        ui::kv("Two-way (Discord)", &remote);
+    }
     ui::blank();
     ui::heading(&format!("Active sessions: {}", sessions.len()));
     for s in &sessions {
@@ -163,4 +173,41 @@ pub fn overview(ctx: &Ctx) -> anyhow::Result<()> {
     ui::hint("agentping test        send a test notification");
     ui::hint("agentping doctor      diagnose problems");
     Ok(())
+}
+
+fn remote_status(ctx: &Ctx, config: &agentping_core::Config, daemon_running: bool) -> String {
+    if !daemon_running {
+        return ui::status_word("inactive (daemon not running)", None);
+    }
+    let Ok(client) =
+        agentping_daemon::DaemonClient::new(&ctx.paths, config, std::time::Duration::from_secs(3))
+    else {
+        return ui::status_word("unknown", None);
+    };
+    let Ok(rt) = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    else {
+        return ui::status_word("unknown", None);
+    };
+    match rt.block_on(client.remote_status()) {
+        Ok(r) if r.connected => format!(
+            "{} · {} · {} open prompt(s)",
+            ui::status_word("connected", Some(true)),
+            if r.away {
+                "away (prompts go to Discord)"
+            } else {
+                "at keyboard"
+            },
+            r.pending
+        ),
+        Ok(r) => ui::status_word(
+            &format!(
+                "not connected{}",
+                r.error.map(|e| format!(": {e}")).unwrap_or_default()
+            ),
+            Some(false),
+        ),
+        Err(_) => ui::status_word("unknown", None),
+    }
 }

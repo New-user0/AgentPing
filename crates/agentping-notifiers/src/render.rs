@@ -258,10 +258,20 @@ pub fn render(event: &Event, severity: Severity, config: &Config) -> RenderedNot
             });
         }
     }
-    let footer = match event.session_short() {
+    let mut footer = match event.session_short() {
         Some(s) => format!("AgentPing · session {s}"),
         None => "AgentPing".to_owned(),
     };
+    let can_continue = config.remote.enabled
+        && config.remote.continue_replies
+        && event.session_id.is_some()
+        && matches!(
+            event.event_type,
+            EventType::TaskCompleted | EventType::TaskFailed | EventType::AgentIdle
+        );
+    if can_continue {
+        footer.push_str(" · ↩️ reply to this message to continue");
+    }
 
     RenderedNotification {
         event_id: event.id.to_string(),

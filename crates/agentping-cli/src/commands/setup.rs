@@ -3,7 +3,7 @@
 use std::io::BufRead;
 
 use agentping_agents::claude::install::{
-    detect_shell, plan_install, plan_uninstall, settings_path, HookShell, Scope, MANAGED_HOOKS,
+    detect_shell, managed_hooks, plan_install, plan_uninstall, settings_path, HookShell, Scope,
 };
 use agentping_core::paths::display_path;
 use agentping_core::secrets::{Secret, SecretKey, SecretSource};
@@ -49,7 +49,9 @@ pub fn install_claude_hooks(ctx: &Ctx, scope: Scope, dry_run: bool) -> anyhow::R
         ui::hint("Hooks will break if you `cargo clean`. Prefer `cargo install --path crates/agentping-cli` first.");
     }
     let shell = detect_shell();
-    let change = plan_install(&path, &exe, shell)?;
+    let remote = ctx.config_or_default().remote;
+    let hooks = managed_hooks(&remote);
+    let change = plan_install(&path, &exe, shell, &hooks)?;
     let shell_label = match shell {
         HookShell::Posix => "sh",
         HookShell::GitBash => "Git Bash",
@@ -62,11 +64,8 @@ pub fn install_claude_hooks(ctx: &Ctx, scope: Scope, dry_run: bool) -> anyhow::R
             "Command",
             &format!("{} hook claude ({shell_label})", display_path(&exe)),
         );
-        for h in MANAGED_HOOKS {
-            ui::info(&match h.matcher {
-                Some(m) => format!("{} (matcher: {m})", h.event),
-                None => h.event.to_owned(),
-            });
+        for h in &hooks {
+            ui::info(&format!("{} (timeout {}s)", h.label(), h.timeout));
         }
         if change.changed {
             ui::line(&ui::dim("Resulting settings:"));
@@ -86,7 +85,7 @@ pub fn install_claude_hooks(ctx: &Ctx, scope: Scope, dry_run: bool) -> anyhow::R
     let backup = change.apply()?;
     ui::ok(&format!(
         "Installed {} Claude Code hooks in {}",
-        MANAGED_HOOKS.len(),
+        hooks.len(),
         display_path(&path)
     ));
     if let Some(b) = backup {
@@ -177,6 +176,11 @@ fn read_windows_user_env(var: &str) -> Option<String> {
             .trim();
         (!value.is_empty()).then(|| value.to_owned())
     })
+}
+
+/// Obtains a secret from `--from-env`, `--stdin` or a hidden prompt.
+pub fn obtain_secret_public(input: &SecretInput, prompt: &str) -> anyhow::Result<Secret> {
+    obtain_secret(None, input, prompt)
 }
 
 /// Obtains a secret from a flag, an environment variable, stdin or an interactive prompt.

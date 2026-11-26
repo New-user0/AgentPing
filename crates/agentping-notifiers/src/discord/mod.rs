@@ -228,7 +228,16 @@ impl DiscordProvider {
         let status = resp.status();
         let code = Some(status.as_u16());
         if status.is_success() {
-            return Ok(Delivered { http_status: code });
+            // With `?wait=true` Discord returns the created message.
+            let id = resp
+                .json::<Value>()
+                .await
+                .ok()
+                .and_then(|v| v.get("id").and_then(Value::as_str).map(str::to_owned));
+            return Ok(Delivered {
+                http_status: code,
+                message_ids: id.into_iter().collect(),
+            });
         }
         if status.as_u16() == 429 {
             let header = retry_after_header(resp.headers());
@@ -286,13 +295,17 @@ impl NotificationProvider for DiscordProvider {
 
     async fn send(&self, n: &RenderedNotification) -> Result<Delivered, DeliveryError> {
         let payloads = build_payloads(n, &self.username);
-        let mut last = Delivered { http_status: None };
+        let mut all = Delivered {
+            http_status: None,
+            message_ids: Vec::new(),
+        };
         for (i, payload) in payloads.iter().enumerate() {
             let mut attempt = 0;
             loop {
                 match self.post(payload).await {
                     Ok(d) => {
-                        last = d;
+                        all.http_status = d.http_status;
+                        all.message_ids.extend(d.message_ids);
                         break;
                     }
                     // Once part 1 is out, retrying the whole notification would duplicate it,
@@ -309,7 +322,7 @@ impl NotificationProvider for DiscordProvider {
                 }
             }
         }
-        Ok(last)
+        Ok(all)
     }
 
     async fn health_check(&self) -> ProviderHealth {

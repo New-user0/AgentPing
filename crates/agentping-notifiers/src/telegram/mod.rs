@@ -266,7 +266,10 @@ impl NotificationProvider for TelegramProvider {
     }
 
     async fn send(&self, n: &RenderedNotification) -> Result<Delivered, DeliveryError> {
-        let mut last = Delivered { http_status: None };
+        let mut all = Delivered {
+            http_status: None,
+            message_ids: Vec::new(),
+        };
         for (i, text) in format_messages(n).iter().enumerate() {
             let silent = i > 0 || (self.silent_low_severity && n.severity == Severity::Low);
             let body = json!({
@@ -279,15 +282,20 @@ impl NotificationProvider for TelegramProvider {
             let mut attempt = 0;
             loop {
                 let result = match self.call("sendMessage", &body).await {
-                    Ok((status, resp)) if resp.ok => Ok(status),
+                    Ok((status, resp)) if resp.ok => Ok((
+                        status,
+                        resp.result
+                            .as_ref()
+                            .and_then(|r| r.get("message_id"))
+                            .and_then(Value::as_i64),
+                    )),
                     Ok((status, resp)) => Err(classify(status, resp)),
                     Err(e) => Err(e),
                 };
                 match result {
-                    Ok(status) => {
-                        last = Delivered {
-                            http_status: Some(status),
-                        };
+                    Ok((status, id)) => {
+                        all.http_status = Some(status);
+                        all.message_ids.extend(id.map(|i| i.to_string()));
                         break;
                     }
                     // Avoid re-sending earlier parts: wait out short rate limits in place.
@@ -303,7 +311,7 @@ impl NotificationProvider for TelegramProvider {
                 }
             }
         }
-        Ok(last)
+        Ok(all)
     }
 
     async fn health_check(&self) -> ProviderHealth {

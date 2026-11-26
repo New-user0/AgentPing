@@ -152,4 +152,82 @@ impl DaemonClient {
         let _: serde_json::Value = Self::parse(resp).await?;
         Ok(())
     }
+
+    async fn send_json<T: DeserializeOwned>(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+        body: Option<&serde_json::Value>,
+    ) -> Result<T, ClientError> {
+        let token = self.auth()?;
+        let mut req = self
+            .http
+            .request(method, format!("{}{path}", self.base))
+            .bearer_auth(token);
+        if let Some(b) = body {
+            req = req.json(b);
+        }
+        let resp = req.send().await.map_err(Self::map_err)?;
+        Self::parse(resp).await
+    }
+
+    /// Registers a remote interaction for a waiting hook.
+    pub async fn create_interaction(
+        &self,
+        req: &agentping_core::remote::CreateInteraction,
+    ) -> Result<agentping_core::remote::CreateInteractionResult, ClientError> {
+        let body = serde_json::to_value(req).map_err(|e| ClientError::Other(e.to_string()))?;
+        self.send_json(reqwest::Method::POST, "/v1/interactions", Some(&body))
+            .await
+    }
+
+    /// Long-polls an interaction for up to `wait_secs`.
+    pub async fn wait_interaction(
+        &self,
+        id: &str,
+        wait_secs: u64,
+    ) -> Result<agentping_core::remote::InteractionState, ClientError> {
+        self.send_json(
+            reqwest::Method::GET,
+            &format!("/v1/interactions/{id}?wait={wait_secs}"),
+            None,
+        )
+        .await
+    }
+
+    /// Withdraws an interaction.
+    pub async fn cancel_interaction(&self, id: &str) -> Result<(), ClientError> {
+        let token = self.auth()?;
+        let resp = self
+            .http
+            .delete(format!("{}/v1/interactions/{id}", self.base))
+            .bearer_auth(token)
+            .send()
+            .await
+            .map_err(Self::map_err)?;
+        if resp.status().is_success() {
+            Ok(())
+        } else {
+            Err(ClientError::Rejected {
+                status: resp.status().as_u16(),
+                message: String::new(),
+            })
+        }
+    }
+
+    /// Remote interaction status.
+    pub async fn remote_status(&self) -> Result<crate::remote::RemoteStatus, ClientError> {
+        self.send_json(reqwest::Method::GET, "/v1/remote", None)
+            .await
+    }
+
+    /// Sets presence (`away = true` routes prompts to Discord).
+    pub async fn set_presence(
+        &self,
+        away: bool,
+    ) -> Result<crate::remote::RemoteStatus, ClientError> {
+        let body = serde_json::json!({ "away": away });
+        self.send_json(reqwest::Method::POST, "/v1/remote/presence", Some(&body))
+            .await
+    }
 }

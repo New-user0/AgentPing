@@ -12,6 +12,7 @@ agentping-core.workspace = true
 agentping-storage.workspace = true
 agentping-rules.workspace = true
 agentping-notifiers.workspace = true
+agentping-remote.workspace = true
 anyhow.workspace = true
 thiserror.workspace = true
 serde.workspace = true

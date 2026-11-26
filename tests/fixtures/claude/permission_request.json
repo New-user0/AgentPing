@@ -1,0 +1,10 @@
+{
+  "session_id": "5f0c8b2e-3d4a-4b7e-9f1a-2c6d8e0b1a34",
+  "transcript_path": "/Users/dev/.claude/projects/x/5f0c8b2e.jsonl",
+  "cwd": "/Users/dev/backend-api",
+  "permission_mode": "default",
+  "hook_event_name": "PermissionRequest",
+  "tool_name": "Bash",
+  "tool_input": { "command": "rm -rf node_modules", "description": "Remove node_modules directory" },
+  "permission_suggestions": [ { "type": "addRules", "rules": [ { "toolName": "Bash", "ruleContent": "rm -rf node_modules" } ], "behavior": "allow", "destination": "localSettings" } ]
+}

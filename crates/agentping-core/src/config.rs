@@ -46,6 +46,8 @@ pub struct Config {
     pub rules: Vec<RuleConfig>,
     /// Per-event-type template overrides, keyed by event type (e.g. `permission_request`).
     pub templates: BTreeMap<String, TemplateConfig>,
+    /// Two-way remote interaction.
+    pub remote: RemoteConfig,
 }
 
 impl Default for Config {
@@ -60,6 +62,67 @@ impl Default for Config {
             quiet_hours: QuietHoursConfig::default(),
             rules: Vec::new(),
             templates: BTreeMap::new(),
+            remote: RemoteConfig::default(),
+        }
+    }
+}
+
+/// How remote prompts (permissions, questions) are routed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RemoteRoute {
+    /// Only while you are away (`agentping away`, the `away` command in Discord, or no prompt
+    /// typed locally for `away_after_minutes`).
+    WhenAway,
+    /// Always send permission requests and questions to Discord as well.
+    Always,
+}
+
+/// `[remote]` — two-way interaction through a Discord bot. Disabled by default.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct RemoteConfig {
+    /// Master switch for remote interaction.
+    pub enabled: bool,
+    /// Discord channel the bot posts prompts in and reads replies from.
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "string_or_integer"
+    )]
+    pub discord_channel_id: Option<String>,
+    /// Discord user ids allowed to answer. Everyone else is ignored.
+    pub discord_user_ids: Vec<String>,
+    /// Reply to a "finished"/"waiting" notification to send the agent new instructions.
+    pub continue_replies: bool,
+    /// Approve or deny tool permission requests remotely.
+    pub permissions: bool,
+    /// Answer the agent's multiple-choice questions remotely.
+    pub questions: bool,
+    /// When permission requests and questions are routed to Discord.
+    pub route: RemoteRoute,
+    /// With `route = "when_away"`: consider yourself away after this many minutes without a
+    /// locally typed prompt (0 = only the explicit `away` command).
+    pub away_after_minutes: u32,
+    /// How long a stopped session keeps listening for a reply.
+    pub reply_timeout_minutes: u32,
+    /// How long a permission request or question waits for a remote answer before falling
+    /// back to the normal local prompt.
+    pub decision_timeout_minutes: u32,
+}
+
+impl Default for RemoteConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            discord_channel_id: None,
+            discord_user_ids: Vec::new(),
+            continue_replies: true,
+            permissions: true,
+            questions: true,
+            route: RemoteRoute::WhenAway,
+            away_after_minutes: 5,
+            reply_timeout_minutes: 60,
+            decision_timeout_minutes: 10,
         }
     }
 }
@@ -626,6 +689,57 @@ impl Config {
                 }
             }
         }
+        let r = &self.remote;
+        if r.enabled {
+            if r.discord_channel_id
+                .as_deref()
+                .is_none_or(|c| c.trim().is_empty())
+            {
+                issue(
+                    "remote.discord_channel_id",
+                    "is required when remote is enabled (run `agentping setup discord-bot`)".into(),
+                );
+            }
+            if r.discord_user_ids.is_empty() {
+                issue(
+                    "remote.discord_user_ids",
+                    "at least one allowed Discord user id is required (run `agentping setup discord-bot`)".into(),
+                );
+            }
+        }
+        for (key, value) in [
+            (
+                "remote.discord_channel_id",
+                r.discord_channel_id.iter().collect::<Vec<_>>(),
+            ),
+            (
+                "remote.discord_user_ids",
+                r.discord_user_ids.iter().collect(),
+            ),
+        ] {
+            for v in value {
+                if !v.is_empty()
+                    && !(v.len() >= 15 && v.len() <= 22 && v.chars().all(|c| c.is_ascii_digit()))
+                {
+                    issue(
+                        key,
+                        format!("'{v}' is not a Discord id (a 17-20 digit number)"),
+                    );
+                }
+            }
+        }
+        if !(1..=24 * 60).contains(&r.reply_timeout_minutes) {
+            issue(
+                "remote.reply_timeout_minutes",
+                "must be between 1 and 1440".into(),
+            );
+        }
+        if !(1..=60).contains(&r.decision_timeout_minutes) {
+            issue(
+                "remote.decision_timeout_minutes",
+                "must be between 1 and 60".into(),
+            );
+        }
         issues
     }
 
@@ -846,6 +960,19 @@ min_severity = "urgent"       # events at or above this severity still notify
 # name = "mute sandbox"
 # projects = ["sandbox"]
 # notify = false
+
+# Two-way interaction through a Discord bot (set up with `agentping setup discord-bot`).
+[remote]
+enabled = false
+# discord_channel_id = "123456789012345678"
+discord_user_ids = []         # only these Discord users can answer
+continue_replies = true       # reply to a finished/idle ping to give Claude new instructions
+permissions = true            # approve/deny tool permissions from Discord
+questions = true              # answer Claude's multiple-choice questions from Discord
+route = "when_away"           # "when_away" or "always" (for permissions and questions)
+away_after_minutes = 5        # away = no prompt typed locally for this long (0 = only `agentping away`)
+reply_timeout_minutes = 60
+decision_timeout_minutes = 10
 
 # Template overrides. Placeholders: {project} {agent} {event} {message} {title} {session} {severity} {time} {emoji}
 # [templates.task_completed]

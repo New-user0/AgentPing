@@ -201,3 +201,124 @@ fn every_fixture_parses_without_panicking() {
         }
     }
 }
+
+fn payload(name: &str) -> serde_json::Value {
+    serde_json::from_slice(&fixture(name)).unwrap()
+}
+
+#[test]
+fn permission_request_is_context_with_command_details() {
+    let e = event("permission_request.json");
+    assert_eq!(e.event_type, EventType::Activity);
+    assert_eq!(e.title.as_deref(), Some("Permission requested: Bash"));
+    let msg = e.message.unwrap();
+    assert!(msg.contains("rm -rf node_modules"), "{msg}");
+    assert!(msg.contains("Remove node_modules directory"));
+}
+
+#[test]
+fn remote_candidates_follow_the_hook_api() {
+    use agentping_core::remote::InteractionRequest;
+    match remote_candidate(&payload("permission_request.json"))
+        .unwrap()
+        .request
+    {
+        InteractionRequest::Permission { tool_name, details } => {
+            assert_eq!(tool_name, "Bash");
+            assert!(details.contains("rm -rf node_modules"));
+        }
+        other => panic!("{other:?}"),
+    }
+    let q = remote_candidate(&payload("pre_tool_use_ask_user_question.json")).unwrap();
+    assert_eq!(
+        q.supersedes_cancel_key.as_deref(),
+        Some("claude:8a1d2c3b-0000-4000-8000-000000000001:toolu_01ABCDEF")
+    );
+    match q.request {
+        InteractionRequest::Question { questions } => {
+            assert_eq!(
+                questions[0].question,
+                "Which payment provider should I implement?"
+            );
+            assert_eq!(questions[0].options[0].label, "Stripe");
+            assert!(!questions[0].multi_select);
+        }
+        other => panic!("{other:?}"),
+    }
+    assert!(matches!(
+        remote_candidate(&payload("stop.json")).unwrap().request,
+        InteractionRequest::Continue { .. }
+    ));
+    assert!(remote_candidate(&payload("pre_tool_use_bash.json")).is_none());
+    assert!(remote_candidate(&payload("notification_idle_prompt.json")).is_none());
+}
+
+#[test]
+fn hook_output_matches_documented_shapes() {
+    use agentping_core::remote::InteractionResponse;
+    let p = payload("permission_request.json");
+    let Some(HookOutput::Json(allow)) = hook_output(
+        &p,
+        &InteractionResponse::Permission {
+            allow: true,
+            message: None,
+        },
+        "om",
+    ) else {
+        panic!()
+    };
+    assert_eq!(
+        allow["hookSpecificOutput"]["hookEventName"],
+        "PermissionRequest"
+    );
+    assert_eq!(allow["hookSpecificOutput"]["decision"]["behavior"], "allow");
+    let Some(HookOutput::Json(deny)) = hook_output(
+        &p,
+        &InteractionResponse::Permission {
+            allow: false,
+            message: Some("use npm ci".into()),
+        },
+        "om",
+    ) else {
+        panic!()
+    };
+    assert_eq!(deny["hookSpecificOutput"]["decision"]["behavior"], "deny");
+    assert!(deny["hookSpecificOutput"]["decision"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("use npm ci"));
+
+    let q = payload("pre_tool_use_ask_user_question.json");
+    let mut answers = std::collections::BTreeMap::new();
+    answers.insert(
+        "Which payment provider should I implement?".to_owned(),
+        "Stripe".to_owned(),
+    );
+    let Some(HookOutput::Json(out)) =
+        hook_output(&q, &InteractionResponse::Question { answers }, "om")
+    else {
+        panic!()
+    };
+    let hso = &out["hookSpecificOutput"];
+    assert_eq!(hso["hookEventName"], "PreToolUse");
+    assert_eq!(hso["permissionDecision"], "allow");
+    assert_eq!(
+        hso["updatedInput"]["questions"], q["tool_input"]["questions"],
+        "original questions echoed"
+    );
+    assert_eq!(
+        hso["updatedInput"]["answers"]["Which payment provider should I implement?"],
+        "Stripe"
+    );
+
+    match hook_output(
+        &payload("stop.json"),
+        &InteractionResponse::Continue {
+            text: "now add tests".into(),
+        },
+        "om",
+    ) {
+        Some(HookOutput::Wake(t)) => assert!(t.ends_with("now add tests")),
+        _ => panic!(),
+    }
+}

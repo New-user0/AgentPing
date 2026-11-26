@@ -1,0 +1,28 @@
+[package]
+name = "agentping-remote"
+description = "Two-way remote interaction for AgentPing (Discord bot: gateway, prompts, reply parsing)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+agentping-core.workspace = true
+agentping-notifiers.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+reqwest.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+thiserror.workspace = true
+rand.workspace = true
+tokio-tungstenite = { version = "0.30", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
+futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+
+[dev-dependencies]
+axum.workspace = true
+
+[lints]
+workspace = true

@@ -5,6 +5,7 @@
 
 use std::path::{Path, PathBuf};
 
+use agentping_core::config::RemoteConfig;
 use agentping_core::fsutil::atomic_write;
 use serde_json::{json, Map, Value};
 
@@ -17,55 +18,78 @@ pub struct ManagedHook {
     pub matcher: Option<&'static str>,
     /// Timeout in seconds.
     pub timeout: u32,
+    /// Runs `hook claude --wait-reply` (waits for a remote reply in the background).
+    pub wait_reply: bool,
 }
 
-/// The hooks AgentPing installs.
+impl ManagedHook {
+    const fn new(event: &'static str, matcher: Option<&'static str>, timeout: u32) -> Self {
+        Self {
+            event,
+            matcher,
+            timeout,
+            wait_reply: false,
+        }
+    }
+
+    /// Display label, e.g. `PreToolUse(AskUserQuestion)`.
+    pub fn label(&self) -> String {
+        let base = match self.matcher {
+            Some(m) => format!("{}({m})", self.event),
+            None => self.event.to_owned(),
+        };
+        if self.wait_reply {
+            format!("{base} [waits for Discord reply]")
+        } else {
+            base
+        }
+    }
+}
+
+/// The hooks AgentPing installs for the given remote settings.
 ///
-/// `PermissionRequest` is intentionally not used: the `Notification` hook's
-/// `permission_prompt` type fires only after a prompt has waited a few seconds, which is the
-/// "user is away" signal we want, and avoids duplicate notifications.
-pub const MANAGED_HOOKS: [ManagedHook; 8] = [
-    ManagedHook {
-        event: "Notification",
-        matcher: None,
-        timeout: 10,
-    },
-    ManagedHook {
-        event: "PreToolUse",
-        matcher: Some("AskUserQuestion"),
-        timeout: 10,
-    },
-    ManagedHook {
-        event: "PostToolUse",
-        matcher: Some("AskUserQuestion"),
-        timeout: 10,
-    },
-    ManagedHook {
-        event: "Stop",
-        matcher: None,
-        timeout: 10,
-    },
-    ManagedHook {
-        event: "StopFailure",
-        matcher: None,
-        timeout: 10,
-    },
-    ManagedHook {
-        event: "SessionStart",
-        matcher: None,
-        timeout: 10,
-    },
-    ManagedHook {
-        event: "SessionEnd",
-        matcher: None,
-        timeout: 5,
-    },
-    ManagedHook {
-        event: "UserPromptSubmit",
-        matcher: None,
-        timeout: 10,
-    },
-];
+/// The `permission_prompt` notification is the "you are away" ping; the `PermissionRequest`
+/// hook adds the exact command to it and, with remote approvals, lets you decide from Discord.
+/// Hooks that wait for a remote answer get timeouts long enough for that wait.
+pub fn managed_hooks(remote: &RemoteConfig) -> Vec<ManagedHook> {
+    let decision = remote
+        .decision_timeout_minutes
+        .saturating_mul(60)
+        .saturating_add(30);
+    let permission_timeout = if remote.enabled && remote.permissions {
+        decision
+    } else {
+        10
+    };
+    let question_timeout = if remote.enabled && remote.questions {
+        decision
+    } else {
+        10
+    };
+    let mut hooks = vec![
+        ManagedHook::new("Notification", None, 10),
+        ManagedHook::new("PermissionRequest", None, permission_timeout),
+        ManagedHook::new("PreToolUse", Some("AskUserQuestion"), question_timeout),
+        ManagedHook::new("PostToolUse", Some("AskUserQuestion"), 10),
+        ManagedHook::new("Stop", None, 10),
+        ManagedHook::new("StopFailure", None, 10),
+        ManagedHook::new("SessionStart", None, 10),
+        ManagedHook::new("SessionEnd", None, 5),
+        ManagedHook::new("UserPromptSubmit", None, 10),
+    ];
+    if remote.enabled && remote.continue_replies {
+        hooks.push(ManagedHook {
+            event: "Stop",
+            matcher: None,
+            timeout: remote
+                .reply_timeout_minutes
+                .saturating_mul(60)
+                .saturating_add(60),
+            wait_reply: true,
+        });
+    }
+    hooks
+}
 
 /// Which settings file to modify.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -153,28 +177,36 @@ pub fn find_git_bash() -> Option<PathBuf> {
 }
 
 /// Builds the hook handler object for `exe`.
-pub fn handler(exe: &Path, shell: HookShell, timeout: u32) -> Value {
+pub fn handler(exe: &Path, shell: HookShell, hook: &ManagedHook) -> Value {
+    let args = if hook.wait_reply {
+        "hook claude --wait-reply"
+    } else {
+        "hook claude"
+    };
     let (command, shell_name) = match shell {
         HookShell::Posix => (
-            format!("{} hook claude", posix_quote(&exe.to_string_lossy())),
+            format!("{} {args}", posix_quote(&exe.to_string_lossy())),
             None,
         ),
         HookShell::GitBash => (
             format!(
-                "{} hook claude",
+                "{} {args}",
                 posix_quote(&exe.to_string_lossy().replace('\\', "/"))
             ),
             Some("bash"),
         ),
         HookShell::PowerShell => (
-            format!(
-                "& '{}' hook claude",
-                exe.to_string_lossy().replace('\'', "''")
-            ),
+            format!("& '{}' {args}", exe.to_string_lossy().replace('\'', "''")),
             Some("powershell"),
         ),
     };
-    let mut h = json!({ "type": "command", "command": command, "timeout": timeout });
+    let mut h = json!({ "type": "command", "command": command, "timeout": hook.timeout });
+    if hook.wait_reply {
+        if let Some(obj) = h.as_object_mut() {
+            // Runs in the background and wakes Claude when it exits with code 2.
+            obj.insert("asyncRewake".into(), Value::Bool(true));
+        }
+    }
     if let (Some(s), Some(obj)) = (shell_name, h.as_object_mut()) {
         obj.insert("shell".into(), Value::String(s.into()));
     }
@@ -198,7 +230,9 @@ pub fn is_managed_handler(handler: &Value) -> bool {
         return false;
     };
     let lower = cmd.to_ascii_lowercase();
-    lower.contains("agentping") && lower.trim_end().ends_with("hook claude")
+    let lower = lower.trim_end();
+    lower.contains("agentping")
+        && (lower.ends_with("hook claude") || lower.ends_with("hook claude --wait-reply"))
 }
 
 /// Errors while editing Claude Code settings.
@@ -330,34 +364,35 @@ pub fn plan_install(
     path: &Path,
     exe: &Path,
     shell: HookShell,
+    managed: &[ManagedHook],
 ) -> Result<SettingsChange, InstallError> {
     let (before, existed) = load(path)?;
     let mut after = before.clone();
     let root = after
         .as_object_mut()
         .ok_or_else(|| InstallError::UnexpectedShape("settings root is not an object".into()))?;
-    let hooks = root
+    let settings_hooks = root
         .entry("hooks")
         .or_insert_with(|| Value::Object(Map::new()))
         .as_object_mut()
         .ok_or_else(|| InstallError::UnexpectedShape("\"hooks\" is not an object".into()))?;
-    for (name, v) in hooks.iter() {
+    for (name, v) in settings_hooks.iter() {
         if !v.is_array() {
             return Err(InstallError::UnexpectedShape(format!(
                 "\"hooks.{name}\" is not an array"
             )));
         }
     }
-    strip_managed(hooks);
-    for spec in MANAGED_HOOKS {
-        let groups = hooks
+    strip_managed(settings_hooks);
+    for spec in managed {
+        let groups = settings_hooks
             .entry(spec.event)
             .or_insert_with(|| Value::Array(Vec::new()))
             .as_array_mut()
             .ok_or_else(|| {
                 InstallError::UnexpectedShape(format!("\"hooks.{}\" is not an array", spec.event))
             })?;
-        let h = handler(exe, shell, spec.timeout);
+        let h = handler(exe, shell, spec);
         let existing = groups.iter_mut().find(|g| {
             g.get("matcher")
                 .and_then(Value::as_str)
@@ -429,15 +464,12 @@ impl HookStatus {
 }
 
 /// Inspects a settings file for AgentPing hooks.
-pub fn inspect(path: &Path) -> Result<HookStatus, InstallError> {
+pub fn inspect(path: &Path, managed: &[ManagedHook]) -> Result<HookStatus, InstallError> {
     let (doc, _) = load(path)?;
     let mut status = HookStatus::default();
     let hooks = doc.get("hooks").and_then(Value::as_object);
-    for spec in MANAGED_HOOKS {
-        let label = match spec.matcher {
-            Some(m) => format!("{}({m})", spec.event),
-            None => spec.event.to_owned(),
-        };
+    for spec in managed {
+        let label = spec.label();
         let handlers: Vec<&Value> = hooks
             .and_then(|h| h.get(spec.event))
             .and_then(Value::as_array)
@@ -452,6 +484,11 @@ pub fn inspect(path: &Path) -> Result<HookStatus, InstallError> {
             .filter_map(|g| g.get("hooks").and_then(Value::as_array))
             .flatten()
             .filter(|h| is_managed_handler(h))
+            .filter(|h| {
+                h.get("command")
+                    .and_then(Value::as_str)
+                    .is_some_and(|c| c.trim_end().ends_with("--wait-reply") == spec.wait_reply)
+            })
             .collect();
         if handlers.is_empty() {
             status.missing.push(label);

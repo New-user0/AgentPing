@@ -10,6 +10,7 @@ pub mod init;
 pub mod logs;
 pub mod privacy;
 pub mod providers;
+pub mod remote_cmd;
 pub mod rules_cmd;
 pub mod setup;
 pub mod status;

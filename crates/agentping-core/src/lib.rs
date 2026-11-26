@@ -10,6 +10,7 @@ pub mod fsutil;
 pub mod paths;
 pub mod project;
 pub mod redact;
+pub mod remote;
 pub mod retry;
 pub mod secrets;
 pub mod time;

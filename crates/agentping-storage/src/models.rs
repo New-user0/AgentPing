@@ -139,6 +139,8 @@ pub enum AttemptOutcome {
     Delivered {
         /// HTTP status.
         http_status: Option<u16>,
+        /// Provider message id(s), space separated, used to match replies.
+        external_id: Option<String>,
     },
     /// Failed; try again at `retry_at`.
     Retry {

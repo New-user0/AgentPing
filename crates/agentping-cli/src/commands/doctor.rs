@@ -213,7 +213,10 @@ pub fn run(ctx: &Ctx, args: &DoctorArgs) -> anyhow::Result<()> {
         if !path.exists() {
             continue;
         }
-        match inspect(&path) {
+        match inspect(
+            &path,
+            &agentping_agents::claude::install::managed_hooks(&config.remote),
+        ) {
             Ok(s) if s.installed.is_empty() => {}
             Ok(s) => {
                 any_hooks = true;
@@ -253,6 +256,51 @@ pub fn run(ctx: &Ctx, args: &DoctorArgs) -> anyhow::Result<()> {
             "not installed",
             "Run `agentping setup claude`",
         );
+    }
+
+    // Two-way remote interaction
+    if config.remote.enabled {
+        match ctx.secrets().get(SecretKey::DiscordBotToken) {
+            Ok(Some(_)) => r.pass("Discord bot token", "stored"),
+            _ => r.fail(
+                "Discord bot token",
+                "remote is enabled but no bot token is stored",
+                "Run `agentping setup discord-bot`",
+            ),
+        }
+        if daemon.running {
+            let status = agentping_daemon::DaemonClient::new(
+                &ctx.paths,
+                &config,
+                std::time::Duration::from_secs(3),
+            )
+            .ok()
+            .and_then(|c| {
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .ok()
+                    .and_then(|rt| rt.block_on(c.remote_status()).ok())
+            });
+            match status {
+                Some(s) if s.connected => r.pass(
+                    "Two-way (Discord)",
+                    format!("connected; {}", if s.away { "away: prompts go to Discord" } else { "at keyboard: prompts stay local" }),
+                ),
+                Some(s) => r.fail(
+                    "Two-way (Discord)",
+                    s.error.unwrap_or_else(|| "the bot is not connected to Discord".into()),
+                    "Check the bot token and Message Content Intent, then `agentping daemon restart`",
+                ),
+                None => r.warn("Two-way (Discord)", "could not query the daemon", "Run `agentping daemon restart`"),
+            }
+        } else {
+            r.fail(
+                "Two-way (Discord)",
+                "needs the daemon, which is not running",
+                "Run `agentping daemon start`",
+            );
+        }
     }
 
     // Providers

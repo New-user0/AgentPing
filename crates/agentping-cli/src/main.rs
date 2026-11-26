@@ -18,8 +18,8 @@ fn main() -> ExitCode {
 
     // Hooks must never print anything or fail; handle them before any other setup.
     if let Some(Command::Hook(args)) = &cli.command {
-        commands::hook::run(&args.agent);
-        return ExitCode::SUCCESS;
+        let code = commands::hook::run(&args.agent, args.wait_reply);
+        return ExitCode::from(u8::try_from(code).unwrap_or(0));
     }
 
     if cli.no_color {
@@ -57,6 +57,11 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Setup(SetupCommand::Discord(args)) => commands::setup::discord(&ctx, args),
         Command::Setup(SetupCommand::Telegram(args)) => commands::setup::telegram(&ctx, args),
         Command::Setup(SetupCommand::Whatsapp) => commands::setup::whatsapp(),
+        Command::Setup(SetupCommand::DiscordBot(args)) => {
+            commands::remote_cmd::setup_discord_bot(&ctx, args)
+        }
+        Command::Away => commands::remote_cmd::presence(&ctx, true),
+        Command::Back => commands::remote_cmd::presence(&ctx, false),
         Command::Test(args) => commands::test_cmd::run(&ctx, args),
         Command::Status => commands::status::run(&ctx),
         Command::Doctor(args) => commands::doctor::run(&ctx, args),

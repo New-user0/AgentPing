@@ -137,6 +137,7 @@ fn queue_claim_deliver_retry_fail_lifecycle() {
             &again[0].id,
             &AttemptOutcome::Delivered {
                 http_status: Some(200),
+                external_id: Some("m1 m2".into()),
             },
             retry_at,
             8,
@@ -399,4 +400,154 @@ fn unprocessed_events_are_returned_until_marked() {
     db.write(|s| s.mark_processed(&e.id.to_string(), "notify: discord", Utc::now()))
         .unwrap();
     assert!(db.store().unprocessed_events(10).unwrap().is_empty());
+}
+
+#[test]
+fn interactions_resolve_once_and_close_per_session() {
+    let mut db = Database::open_in_memory().unwrap();
+    let now = Utc::now();
+    let req = serde_json::json!({ "kind": "permission", "tool_name": "Bash", "details": "ls" });
+    db.write(|s| {
+        s.create_interaction(
+            &NewInteraction {
+                id: "i1",
+                kind: InteractionKind::Permission,
+                agent: "claude",
+                session_id: Some("s1"),
+                project_name: Some("api"),
+                request: &req,
+                expires_at: now + Duration::minutes(10),
+            },
+            now,
+        )?;
+        s.set_interaction_message("i1", "m1")
+    })
+    .unwrap();
+    assert_eq!(db.store().pending_interactions(now).unwrap().len(), 1);
+    assert_eq!(
+        db.store().interaction_by_message("m1").unwrap().unwrap().id,
+        "i1"
+    );
+    assert!(db
+        .store()
+        .has_recent_interaction(
+            "claude",
+            "s1",
+            InteractionKind::Permission,
+            now - Duration::minutes(1)
+        )
+        .unwrap());
+    let resp = serde_json::json!({ "kind": "permission", "allow": true });
+    assert!(db
+        .write(|s| s.resolve_interaction("i1", &resp, "om", now))
+        .unwrap());
+    assert!(
+        !db.write(|s| s.resolve_interaction("i1", &resp, "om", now))
+            .unwrap(),
+        "replay rejected"
+    );
+    let rec = db.store().interaction("i1").unwrap().unwrap();
+    assert_eq!(rec.status, InteractionStatus::Resolved);
+    assert_eq!(rec.responder.as_deref(), Some("om"));
+
+    db.write(|s| {
+        for id in ["i2", "i3"] {
+            s.create_interaction(
+                &NewInteraction {
+                    id,
+                    kind: InteractionKind::Continue,
+                    agent: "claude",
+                    session_id: Some("s1"),
+                    project_name: None,
+                    request: &req,
+                    expires_at: now + Duration::minutes(10),
+                },
+                now,
+            )?;
+        }
+        Ok(())
+    })
+    .unwrap();
+    let closed = db
+        .write(|s| s.close_session_interactions("claude", "s1", None, "typed locally", now))
+        .unwrap();
+    assert_eq!(closed.len(), 2);
+    assert!(db.store().pending_interactions(now).unwrap().is_empty());
+}
+
+#[test]
+fn expired_interactions_cannot_be_resolved() {
+    let mut db = Database::open_in_memory().unwrap();
+    let now = Utc::now();
+    let req = serde_json::json!({});
+    db.write(|s| {
+        s.create_interaction(
+            &NewInteraction {
+                id: "old",
+                kind: InteractionKind::Question,
+                agent: "claude",
+                session_id: None,
+                project_name: None,
+                request: &req,
+                expires_at: now - Duration::seconds(1),
+            },
+            now - Duration::minutes(5),
+        )
+    })
+    .unwrap();
+    assert!(!db
+        .write(|s| s.resolve_interaction("old", &req, "om", now))
+        .unwrap());
+    let expired = db.write(|s| s.expire_interactions(now)).unwrap();
+    assert_eq!(expired.len(), 1);
+    assert_eq!(expired[0].status, InteractionStatus::Expired);
+}
+
+#[test]
+fn replies_map_to_sessions_through_message_ids_and_kv_works() {
+    let mut db = Database::open_in_memory().unwrap();
+    let e = event(EventType::TaskCompleted, "s9", "done");
+    insert(&mut db, &e);
+    let now = Utc::now();
+    let id = e.id.to_string();
+    db.write(|s| {
+        s.enqueue(
+            &NewNotification {
+                event_id: &id,
+                provider: "discord",
+                not_before: now,
+                cancel_key: None,
+            },
+            now,
+        )
+    })
+    .unwrap();
+    let claimed = db
+        .write(|s| s.claim_due(now, now + Duration::seconds(30), 5))
+        .unwrap();
+    db.write(|s| {
+        s.record_attempt(
+            &claimed[0].id,
+            &AttemptOutcome::Delivered {
+                http_status: Some(200),
+                external_id: Some("111 222".into()),
+            },
+            now,
+            5,
+        )
+    })
+    .unwrap();
+    assert_eq!(
+        db.store().session_for_message("discord", "222").unwrap(),
+        Some(("claude".to_owned(), "s9".to_owned()))
+    );
+    assert_eq!(
+        db.store().session_for_message("discord", "22").unwrap(),
+        None
+    );
+    db.write(|s| s.kv_set("presence", "away", now)).unwrap();
+    assert_eq!(
+        db.store().kv_get("presence").unwrap().as_deref(),
+        Some("away")
+    );
 }

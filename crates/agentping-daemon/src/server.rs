@@ -23,6 +23,9 @@ use tokio::sync::{watch, Notify};
 use crate::delivery::{with_db, SharedDb};
 use crate::engine::{Engine, IngestOutcome};
 use crate::local::constant_time_eq;
+use crate::remote::{RemoteService, RemoteStatus};
+use agentping_core::remote::CreateInteraction;
+use axum::extract::Path;
 
 /// Maximum request body size.
 pub const MAX_BODY_BYTES: usize = 256 * 1024;
@@ -48,6 +51,8 @@ pub struct AppState {
     pub providers_ready: Arc<Vec<String>>,
     /// Providers that failed to initialize, with reasons.
     pub providers_failed: Arc<Vec<(String, String)>>,
+    /// Two-way remote interaction, when enabled.
+    pub remote: Option<Arc<RemoteService>>,
 }
 
 /// `GET /v1/health` response.
@@ -102,6 +107,13 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/events", post(ingest).get(list_events))
         .route("/v1/sessions", get(sessions))
         .route("/v1/admin/shutdown", post(shutdown))
+        .route("/v1/interactions", post(create_interaction))
+        .route(
+            "/v1/interactions/{id}",
+            get(wait_interaction).delete(cancel_interaction),
+        )
+        .route("/v1/remote", get(remote_status))
+        .route("/v1/remote/presence", post(set_presence))
         .route_layer(middleware::from_fn_with_state(state.clone(), require_token));
     Router::new()
         .route("/v1/health", get(health))
@@ -210,6 +222,12 @@ async fn ingest(State(state): State<AppState>, body: axum::body::Bytes) -> Respo
             if outcome.queued() > 0 {
                 state.wake.notify_one();
             }
+            if let Some(remote) = state.remote.clone() {
+                let closed = outcome.closed_interactions().to_vec();
+                if !closed.is_empty() {
+                    tokio::spawn(async move { remote.on_closed(closed).await });
+                }
+            }
             let code = match outcome {
                 IngestOutcome::Accepted { .. } => StatusCode::ACCEPTED,
                 IngestOutcome::Duplicate { .. } => StatusCode::OK,
@@ -307,5 +325,87 @@ mod tests {
         assert!(!host_allowed("evil.example:38471", 38471));
         assert!(!host_allowed("attacker.com", 38471));
         assert!(!host_allowed("", 38471));
+    }
+}
+
+fn remote_disabled() -> Response {
+    error(
+        StatusCode::CONFLICT,
+        "remote interaction is not enabled (run `agentping setup discord-bot`)",
+    )
+}
+
+async fn create_interaction(
+    State(state): State<AppState>,
+    Json(req): Json<CreateInteraction>,
+) -> Response {
+    let Some(remote) = state.remote.clone() else {
+        return remote_disabled();
+    };
+    match remote.create(req).await {
+        Ok(result) => Json(result).into_response(),
+        Err(e) => {
+            tracing::error!(error = %e, "could not create remote interaction");
+            error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "could not create the interaction",
+            )
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct WaitParams {
+    wait: Option<u64>,
+}
+
+async fn wait_interaction(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Query(p): Query<WaitParams>,
+) -> Response {
+    let Some(remote) = state.remote.clone() else {
+        return remote_disabled();
+    };
+    let wait = std::time::Duration::from_secs(p.wait.unwrap_or(0).min(55));
+    match remote.wait(&id, wait).await {
+        Ok(Some(s)) => Json(s).into_response(),
+        Ok(None) => error(StatusCode::NOT_FOUND, "no such interaction"),
+        Err(e) => error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+    }
+}
+
+async fn cancel_interaction(State(state): State<AppState>, Path(id): Path<String>) -> Response {
+    let Some(remote) = state.remote.clone() else {
+        return remote_disabled();
+    };
+    match remote
+        .cancel(&id, "Timed out — answer it in the terminal")
+        .await
+    {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(e) => error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+    }
+}
+
+async fn remote_status(State(state): State<AppState>) -> Response {
+    match state.remote.clone() {
+        Some(r) => Json(r.status().await).into_response(),
+        None => Json(RemoteStatus::default()).into_response(),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct PresenceBody {
+    away: bool,
+}
+
+async fn set_presence(State(state): State<AppState>, Json(body): Json<PresenceBody>) -> Response {
+    let Some(remote) = state.remote.clone() else {
+        return remote_disabled();
+    };
+    match remote.set_away(body.away).await {
+        Ok(()) => Json(remote.status().await).into_response(),
+        Err(e) => error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
     }
 }

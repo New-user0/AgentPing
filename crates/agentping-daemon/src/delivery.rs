@@ -127,7 +127,7 @@ impl Deliverer {
 
 fn log_outcome(id: &str, outcome: &AttemptOutcome) {
     match outcome {
-        AttemptOutcome::Delivered { http_status } => {
+        AttemptOutcome::Delivered { http_status, .. } => {
             tracing::info!(notification = id, ?http_status, "notification delivered");
         }
         AttemptOutcome::Retry {
@@ -164,6 +164,8 @@ async fn attempt(
     match result {
         Ok(Ok(delivered)) => AttemptOutcome::Delivered {
             http_status: delivered.http_status,
+            external_id: (!delivered.message_ids.is_empty())
+                .then(|| delivered.message_ids.join(" ")),
         },
         Ok(Err(err)) => match err.kind {
             FailureKind::Permanent => AttemptOutcome::Failed {
@@ -243,6 +245,7 @@ mod tests {
                 .pop_front()
                 .unwrap_or(Ok(Delivered {
                     http_status: Some(200),
+                    message_ids: vec!["m1".into()],
                 }))
         }
         async fn health_check(&self) -> ProviderHealth {

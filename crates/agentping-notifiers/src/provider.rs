@@ -13,6 +13,8 @@ use crate::render::RenderedNotification;
 pub struct Delivered {
     /// HTTP status returned by the provider.
     pub http_status: Option<u16>,
+    /// Provider message ids of the posted message(s), used to match replies.
+    pub message_ids: Vec<String>,
 }
 
 /// Whether a failed delivery should be retried.

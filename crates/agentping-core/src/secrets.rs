@@ -54,17 +54,24 @@ pub enum SecretKey {
     DiscordWebhookUrl,
     /// Telegram bot token.
     TelegramBotToken,
+    /// Discord bot token (two-way interaction).
+    DiscordBotToken,
 }
 
 impl SecretKey {
     /// All known keys.
-    pub const ALL: [SecretKey; 2] = [SecretKey::DiscordWebhookUrl, SecretKey::TelegramBotToken];
+    pub const ALL: [SecretKey; 3] = [
+        SecretKey::DiscordWebhookUrl,
+        SecretKey::TelegramBotToken,
+        SecretKey::DiscordBotToken,
+    ];
 
     /// Identifier used in the keyring and the secrets file.
     pub fn id(self) -> &'static str {
         match self {
             SecretKey::DiscordWebhookUrl => "discord_webhook_url",
             SecretKey::TelegramBotToken => "telegram_bot_token",
+            SecretKey::DiscordBotToken => "discord_bot_token",
         }
     }
 
@@ -73,6 +80,7 @@ impl SecretKey {
         match self {
             SecretKey::DiscordWebhookUrl => "AGENTPING_DISCORD_WEBHOOK_URL",
             SecretKey::TelegramBotToken => "AGENTPING_TELEGRAM_BOT_TOKEN",
+            SecretKey::DiscordBotToken => "AGENTPING_DISCORD_BOT_TOKEN",
         }
     }
 
@@ -81,6 +89,7 @@ impl SecretKey {
         match self {
             SecretKey::DiscordWebhookUrl => "Discord webhook URL",
             SecretKey::TelegramBotToken => "Telegram bot token",
+            SecretKey::DiscordBotToken => "Discord bot token",
         }
     }
 }

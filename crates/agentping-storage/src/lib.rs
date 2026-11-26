@@ -4,6 +4,7 @@
 //! The database runs in WAL mode with a busy timeout so short-lived hook processes, the CLI
 //! and the daemon can safely share it. All multi-statement updates run in transactions.
 
+mod interactions;
 mod models;
 mod queue;
 mod repo;
@@ -13,6 +14,7 @@ use std::time::Duration;
 
 use rusqlite::{Connection, OpenFlags, TransactionBehavior};
 
+pub use interactions::{InteractionKind, InteractionRecord, InteractionStatus, NewInteraction};
 pub use models::*;
 
 /// Errors produced by the storage layer.
@@ -40,7 +42,10 @@ pub enum StorageError {
 /// Result alias for storage operations.
 pub type Result<T, E = StorageError> = std::result::Result<T, E>;
 
-const MIGRATIONS: &[&str] = &[include_str!("migrations/001_init.sql")];
+const MIGRATIONS: &[&str] = &[
+    include_str!("migrations/001_init.sql"),
+    include_str!("migrations/002_remote.sql"),
+];
 
 /// Newest schema version known to this build.
 pub const SCHEMA_VERSION: u32 = MIGRATIONS.len() as u32;

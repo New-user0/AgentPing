@@ -93,7 +93,7 @@ impl Store<'_> {
     ) -> Result<()> {
         let at = format_ts(attempted_at);
         let (label, http_status, error) = match outcome {
-            AttemptOutcome::Delivered { http_status } => ("delivered", *http_status, None),
+            AttemptOutcome::Delivered { http_status, .. } => ("delivered", *http_status, None),
             AttemptOutcome::Retry {
                 http_status, error, ..
             } => ("retry", *http_status, Some(error.as_str())),
@@ -107,11 +107,12 @@ impl Store<'_> {
             params![notification_id, at, label, http_status, error, duration_ms as i64],
         )?;
         match outcome {
-            AttemptOutcome::Delivered { .. } => self.conn.execute(
+            AttemptOutcome::Delivered { external_id, .. } => self.conn.execute(
                 "UPDATE notifications SET status = 'delivered', attempts = attempts + 1,
-                    lease_until = NULL, last_error = NULL, delivered_at = ?2, updated_at = ?2
+                    lease_until = NULL, last_error = NULL, delivered_at = ?2, updated_at = ?2,
+                    external_id = COALESCE(?3, external_id)
                  WHERE id = ?1",
-                params![notification_id, at],
+                params![notification_id, at, external_id],
             )?,
             AttemptOutcome::Retry {
                 retry_at, error, ..

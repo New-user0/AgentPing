@@ -35,6 +35,7 @@ async fn start() -> Server {
         port,
         providers_ready: Arc::new(vec!["discord".into()]),
         providers_failed: Arc::new(vec![]),
+        remote: None,
     };
     tokio::spawn(async move {
         axum::serve(listener, router(state)).await.unwrap();

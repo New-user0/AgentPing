@@ -207,7 +207,7 @@ fn claude_hooks_install_preserves_settings_and_uninstalls_cleanly() {
         .args(["setup", "claude", "--scope", "local"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("Installed 8 Claude Code hooks"));
+        .stdout(predicate::str::contains("Installed 9 Claude Code hooks"));
     let installed: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
     assert_eq!(installed["permissions"], original["permissions"]);
     assert_eq!(

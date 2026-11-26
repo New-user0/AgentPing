@@ -39,9 +39,11 @@ pub async fn run_daemon(paths: Paths, config: Config) -> anyhow::Result<()> {
         tracing::warn!(provider = %name, error = %err, "provider is enabled but not usable");
     }
 
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    let remote = start_remote(&db, &config, &secrets, shutdown_rx.clone())?;
+
     let listener = bind(&config.daemon.host, config.daemon.port).await?;
     let addr = listener.local_addr()?;
-    let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let wake = Arc::new(Notify::new());
     let started_at = Utc::now();
     let state = AppState {
@@ -60,6 +62,7 @@ pub async fn run_daemon(paths: Paths, config: Config) -> anyhow::Result<()> {
                 .map(|(k, v)| (k.clone(), v.clone()))
                 .collect(),
         ),
+        remote,
     };
     write_state(
         &paths,
@@ -171,4 +174,23 @@ pub async fn deliver_until_idle(
         }
     }
     Ok(total)
+}
+
+fn start_remote(
+    db: &SharedDb,
+    config: &Config,
+    secrets: &SecretStore,
+    shutdown: watch::Receiver<bool>,
+) -> anyhow::Result<Option<Arc<crate::remote::RemoteService>>> {
+    if !config.remote.enabled {
+        return Ok(None);
+    }
+    let Some((token, _)) = secrets.get(agentping_core::secrets::SecretKey::DiscordBotToken)? else {
+        tracing::error!("remote is enabled but no Discord bot token is stored; run `agentping setup discord-bot`");
+        return Ok(None);
+    };
+    let api = agentping_remote::discord::DiscordApi::new(http_client()?, token);
+    let service = crate::remote::start(db.clone(), Arc::new(config.clone()), api, shutdown)?;
+    tracing::info!("remote interaction enabled (Discord bot)");
+    Ok(Some(service))
 }

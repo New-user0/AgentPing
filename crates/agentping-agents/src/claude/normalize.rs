@@ -7,8 +7,11 @@
 use std::path::Path;
 
 use agentping_core::config::ClaudeAgentConfig;
+use agentping_core::remote::{
+    describe_tool_call, InteractionRequest, InteractionResponse, Question, QuestionOption,
+};
 use agentping_core::{project, AgentKind, Event, EventType, Severity};
-use serde_json::{Map, Value};
+use serde_json::{json, Map, Value};
 
 use crate::{AdapterContext, AdapterError, AgentAdapter, MAX_PAYLOAD_BYTES};
 
@@ -130,6 +133,17 @@ impl ClaudeAdapter {
                 e.delivery.cancels = question_cancel_key(obj);
                 Some(e)
             }
+            "PermissionRequest" => {
+                // Context only: the `permission_prompt` notification (sent when the prompt has
+                // waited a few seconds) is the user-facing ping, enriched with these details.
+                let tool = str_field(obj, "tool_name").unwrap_or("a tool");
+                let mut e = self.new_event(EventType::Activity);
+                e.title = Some(format!("Permission requested: {tool}"));
+                let details =
+                    describe_tool_call(tool, obj.get("tool_input").unwrap_or(&Value::Null));
+                e.message = (!details.is_empty()).then_some(details);
+                Some(e)
+            }
             "Stop" => {
                 let mut e = self.new_event(EventType::TaskCompleted);
                 e.message = str_field(obj, "last_assistant_message").map(str::to_owned);
@@ -239,4 +253,141 @@ fn question_cancel_key(obj: &Map<String, Value>) -> Option<String> {
     let tool_use_id = str_field(obj, "tool_use_id")?;
     let session = str_field(obj, "session_id").unwrap_or("-");
     Some(format!("claude:{session}:{tool_use_id}"))
+}
+
+/// A remote interaction a hook payload can be turned into.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RemoteCandidate {
+    /// What to ask.
+    pub request: InteractionRequest,
+    /// Pending notification this prompt replaces.
+    pub supersedes_cancel_key: Option<String>,
+}
+
+/// Extracts the remote interaction a Claude Code hook payload supports, if any:
+/// `PermissionRequest` → approve/deny, `PreToolUse(AskUserQuestion)` → answers,
+/// `Stop` → follow-up instructions.
+pub fn remote_candidate(payload: &Value) -> Option<RemoteCandidate> {
+    let obj = payload.as_object()?;
+    match str_field(obj, "hook_event_name")? {
+        "PermissionRequest" => {
+            let tool = str_field(obj, "tool_name").unwrap_or("a tool").to_owned();
+            let details = describe_tool_call(&tool, obj.get("tool_input").unwrap_or(&Value::Null));
+            Some(RemoteCandidate {
+                request: InteractionRequest::Permission {
+                    tool_name: tool,
+                    details,
+                },
+                supersedes_cancel_key: None,
+            })
+        }
+        "PreToolUse" if str_field(obj, "tool_name") == Some(ASK_USER_QUESTION_TOOL) => {
+            let raw = obj.get("tool_input")?.get("questions")?.as_array()?;
+            let questions: Vec<Question> = raw
+                .iter()
+                .filter_map(|q| {
+                    let question = q.get("question")?.as_str()?.trim().to_owned();
+                    let options = q
+                        .get("options")
+                        .and_then(Value::as_array)
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|o| {
+                            Some(QuestionOption {
+                                label: o.get("label")?.as_str()?.to_owned(),
+                                description: o
+                                    .get("description")
+                                    .and_then(Value::as_str)
+                                    .map(str::to_owned),
+                            })
+                        })
+                        .collect();
+                    Some(Question {
+                        question,
+                        header: q.get("header").and_then(Value::as_str).map(str::to_owned),
+                        options,
+                        multi_select: q
+                            .get("multiSelect")
+                            .and_then(Value::as_bool)
+                            .unwrap_or(false),
+                    })
+                })
+                .collect();
+            (!questions.is_empty()).then(|| RemoteCandidate {
+                request: InteractionRequest::Question { questions },
+                supersedes_cancel_key: question_cancel_key(obj),
+            })
+        }
+        "Stop" => Some(RemoteCandidate {
+            request: InteractionRequest::Continue {
+                last_message: str_field(obj, "last_assistant_message").map(str::to_owned),
+            },
+            supersedes_cancel_key: None,
+        }),
+        _ => None,
+    }
+}
+
+/// The hook output that applies a remote response, per the Claude Code hooks reference.
+pub enum HookOutput {
+    /// Print this JSON on stdout and exit 0.
+    Json(Value),
+    /// Print this text on stderr and exit 2 (wakes Claude when the hook uses `asyncRewake`).
+    Wake(String),
+}
+
+/// Builds the hook output for a response to `payload`.
+pub fn hook_output(
+    payload: &Value,
+    response: &InteractionResponse,
+    responder: &str,
+) -> Option<HookOutput> {
+    let who = if responder.is_empty() {
+        "the user".to_owned()
+    } else {
+        responder.to_owned()
+    };
+    match response {
+        InteractionResponse::Permission { allow: true, .. } => Some(HookOutput::Json(json!({
+            "hookSpecificOutput": {
+                "hookEventName": "PermissionRequest",
+                "decision": { "behavior": "allow" }
+            }
+        }))),
+        InteractionResponse::Permission {
+            allow: false,
+            message,
+        } => {
+            let message = match message {
+                Some(m) => {
+                    format!("Denied remotely by {who} via AgentPing (Discord). Their feedback: {m}")
+                }
+                None => format!("Denied remotely by {who} via AgentPing (Discord)."),
+            };
+            Some(HookOutput::Json(json!({
+                "hookSpecificOutput": {
+                    "hookEventName": "PermissionRequest",
+                    "decision": { "behavior": "deny", "message": message }
+                }
+            })))
+        }
+        InteractionResponse::Question { answers } => {
+            let mut input = payload.get("tool_input")?.clone();
+            input
+                .as_object_mut()?
+                .insert("answers".into(), json!(answers));
+            Some(HookOutput::Json(json!({
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": "allow",
+                    "permissionDecisionReason": format!("Answered remotely by {who} via AgentPing (Discord)"),
+                    "updatedInput": input
+                }
+            })))
+        }
+        InteractionResponse::Continue { text } => Some(HookOutput::Wake(format!(
+            "The user ({who}) replied remotely via AgentPing (Discord) after you finished. \
+             Treat this as their next message and continue:\n\n{text}"
+        ))),
+    }
 }

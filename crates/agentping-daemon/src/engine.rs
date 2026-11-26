@@ -3,9 +3,11 @@
 //! The engine is synchronous and storage-backed, so the same code runs inside the daemon and
 //! inside a hook process when the daemon is offline.
 
-use agentping_core::{Config, Event};
+use agentping_core::{Config, Event, EventType};
 use agentping_rules::{Decision, RuleContext, RulesEngine};
-use agentping_storage::{Database, InsertOutcome, NewNotification, Store};
+use agentping_storage::{
+    Database, InsertOutcome, InteractionKind, InteractionRecord, NewNotification, Store,
+};
 use chrono::{DateTime, Local, Utc};
 use serde::Serialize;
 
@@ -26,6 +28,9 @@ pub enum IngestOutcome {
         queued: usize,
         /// Pending notifications cancelled by this event.
         cancelled: usize,
+        /// Remote prompts withdrawn because the user acted locally (their messages need updating).
+        #[serde(skip)]
+        closed_interactions: Vec<InteractionRecord>,
     },
     /// The event duplicated a recent one and was ignored.
     Duplicate {
@@ -40,6 +45,17 @@ impl IngestOutcome {
         match self {
             IngestOutcome::Accepted { queued, .. } => *queued,
             IngestOutcome::Duplicate { .. } => 0,
+        }
+    }
+
+    /// Remote prompts withdrawn by this event.
+    pub fn closed_interactions(&self) -> &[InteractionRecord] {
+        match self {
+            IngestOutcome::Accepted {
+                closed_interactions,
+                ..
+            } => closed_interactions,
+            IngestOutcome::Duplicate { .. } => &[],
         }
     }
 }
@@ -70,11 +86,12 @@ impl Engine {
         now: DateTime<Utc>,
     ) -> anyhow::Result<IngestOutcome> {
         db.write(|store| {
-            match store.insert_event(event, now, chrono::Duration::seconds(DEDUP_WINDOW_SECS))? {
+            let event = self.enrich(store, event, now)?;
+            match store.insert_event(&event, now, chrono::Duration::seconds(DEDUP_WINDOW_SECS))? {
                 InsertOutcome::Duplicate(existing_id) => {
                     Ok(IngestOutcome::Duplicate { existing_id })
                 }
-                InsertOutcome::Inserted => self.process(store, event, now),
+                InsertOutcome::Inserted => self.process(store, &event, now),
             }
         })
         .map_err(Into::into)
@@ -96,6 +113,98 @@ impl Engine {
         Ok(db.write(|s| s.prune(cutoff))?)
     }
 
+    /// Adds the exact tool call (captured by the `PermissionRequest` hook) to the delayed
+    /// `permission_prompt` notification, so the ping says what is being asked.
+    fn enrich(
+        &self,
+        store: &Store<'_>,
+        event: &Event,
+        now: DateTime<Utc>,
+    ) -> agentping_storage::Result<Event> {
+        let mut event = event.clone();
+        let is_prompt = event.event_type == EventType::PermissionRequest
+            && event.source.native_event.as_deref() == Some("Notification");
+        if let (true, Some(session)) = (is_prompt, event.session_id.clone()) {
+            let since = now - chrono::Duration::minutes(10);
+            if let Some(ctx) = store.latest_native_event(
+                event.agent.as_str(),
+                &session,
+                "PermissionRequest",
+                since,
+            )? {
+                let details = ctx.message.unwrap_or_default();
+                let base = event.message.take().unwrap_or_default();
+                event.message = Some(format!("{base}\n\n{details}").trim().to_owned());
+                if let Some(tool) = ctx.metadata.get("tool_name") {
+                    event.metadata.insert("tool_name".into(), tool.clone());
+                }
+            }
+        }
+        Ok(event)
+    }
+
+    /// Withdraws remote prompts the user made obsolete by acting locally.
+    fn close_obsolete_interactions(
+        &self,
+        store: &Store<'_>,
+        event: &Event,
+        now: DateTime<Utc>,
+    ) -> agentping_storage::Result<Vec<InteractionRecord>> {
+        let Some(session) = event.session_id.as_deref() else {
+            return Ok(Vec::new());
+        };
+        let agent = event.agent.as_str();
+        match (
+            event.event_type.clone(),
+            event.source.native_event.as_deref(),
+        ) {
+            (EventType::Activity, Some("UserPromptSubmit")) | (EventType::AgentStopped, _) => store
+                .close_session_interactions(agent, session, None, "handled in the terminal", now),
+            (EventType::TaskCompleted, _) | (EventType::TaskFailed, _) => {
+                let mut closed = store.close_session_interactions(
+                    agent,
+                    session,
+                    Some(InteractionKind::Permission),
+                    "handled in the terminal",
+                    now,
+                )?;
+                closed.extend(store.close_session_interactions(
+                    agent,
+                    session,
+                    Some(InteractionKind::Question),
+                    "handled in the terminal",
+                    now,
+                )?);
+                Ok(closed)
+            }
+            _ => Ok(Vec::new()),
+        }
+    }
+
+    /// Whether this ping duplicates an interactive remote prompt already sent for the session.
+    fn covered_by_prompt(
+        &self,
+        store: &Store<'_>,
+        event: &Event,
+        now: DateTime<Utc>,
+    ) -> agentping_storage::Result<bool> {
+        let (Some(session), true) = (event.session_id.as_deref(), self.config.remote.enabled)
+        else {
+            return Ok(false);
+        };
+        let kind = match event.event_type {
+            EventType::PermissionRequest => InteractionKind::Permission,
+            EventType::UserQuestion => InteractionKind::Question,
+            _ => return Ok(false),
+        };
+        store.has_recent_interaction(
+            event.agent.as_str(),
+            session,
+            kind,
+            now - chrono::Duration::minutes(5),
+        )
+    }
+
     fn process(
         &self,
         store: &Store<'_>,
@@ -103,6 +212,7 @@ impl Engine {
         now: DateTime<Utc>,
     ) -> agentping_storage::Result<IngestOutcome> {
         store.touch_session(event)?;
+        let closed_interactions = self.close_obsolete_interactions(store, event, now)?;
         let cancelled = match event.delivery.cancels.as_deref() {
             Some(key) => store.cancel_pending(key, "answered locally before delivery", now)?,
             None => 0,
@@ -118,7 +228,12 @@ impl Engine {
             now_local: now.with_timezone(&Local).time(),
             recently_notified,
         };
-        let decision = self.rules.evaluate(event, &ctx);
+        let mut decision = self.rules.evaluate(event, &ctx);
+        if decision.notify && self.covered_by_prompt(store, event, now)? {
+            decision.notify = false;
+            decision.providers.clear();
+            decision.reason = "already sent as an interactive Discord prompt".into();
+        }
         let id = event.id.to_string();
         let mut queued = 0;
         if decision.notify {
@@ -152,6 +267,7 @@ impl Engine {
             decision,
             queued,
             cancelled,
+            closed_interactions,
         })
     }
 }
@@ -270,5 +386,85 @@ mod tests {
         assert_eq!(engine.process_backlog(&mut db, Utc::now()).unwrap(), 1);
         assert_eq!(engine.process_backlog(&mut db, Utc::now()).unwrap(), 0);
         assert_eq!(db.store().stats(Utc::now()).unwrap().pending, 1);
+    }
+
+    #[test]
+    fn permission_prompt_is_enriched_with_the_command() {
+        let engine = Engine::new(config()).unwrap();
+        let mut db = Database::open_in_memory().unwrap();
+        let mut ctx = event(EventType::Activity);
+        ctx.source.native_event = Some("PermissionRequest".into());
+        ctx.message = Some("```\nrm -rf node_modules\n```".into());
+        ctx.metadata.insert("tool_name".into(), "Bash".into());
+        engine.ingest(&mut db, &ctx, Utc::now()).unwrap();
+        let mut ping = event(EventType::PermissionRequest);
+        ping.source.native_event = Some("Notification".into());
+        ping.message = Some("Claude needs your permission to use Bash".into());
+        engine.ingest(&mut db, &ping, Utc::now()).unwrap();
+        let stored = db
+            .store()
+            .find_event(&ping.id.to_string())
+            .unwrap()
+            .unwrap();
+        let msg = stored.event.message.unwrap();
+        assert!(msg.starts_with("Claude needs your permission to use Bash"));
+        assert!(msg.contains("rm -rf node_modules"));
+    }
+
+    #[test]
+    fn local_prompt_closes_remote_interactions() {
+        let engine = Engine::new(config()).unwrap();
+        let mut db = Database::open_in_memory().unwrap();
+        let now = Utc::now();
+        let req = serde_json::json!({});
+        db.write(|s| {
+            s.create_interaction(
+                &agentping_storage::NewInteraction {
+                    id: "c1",
+                    kind: InteractionKind::Continue,
+                    agent: "claude",
+                    session_id: Some("s1"),
+                    project_name: None,
+                    request: &req,
+                    expires_at: now + chrono::Duration::minutes(30),
+                },
+                now,
+            )
+        })
+        .unwrap();
+        let mut prompt = event(EventType::Activity);
+        prompt.message = None;
+        prompt.source.native_event = Some("UserPromptSubmit".into());
+        let out = engine.ingest(&mut db, &prompt, now).unwrap();
+        assert_eq!(out.closed_interactions().len(), 1);
+    }
+
+    #[test]
+    fn ping_is_muted_when_an_interactive_prompt_exists() {
+        let mut c = config();
+        c.remote.enabled = true;
+        let engine = Engine::new(c).unwrap();
+        let mut db = Database::open_in_memory().unwrap();
+        let now = Utc::now();
+        let req = serde_json::json!({});
+        db.write(|s| {
+            s.create_interaction(
+                &agentping_storage::NewInteraction {
+                    id: "p1",
+                    kind: InteractionKind::Permission,
+                    agent: "claude",
+                    session_id: Some("s1"),
+                    project_name: None,
+                    request: &req,
+                    expires_at: now + chrono::Duration::minutes(10),
+                },
+                now,
+            )
+        })
+        .unwrap();
+        let out = engine
+            .ingest(&mut db, &event(EventType::PermissionRequest), now)
+            .unwrap();
+        assert_eq!(out.queued(), 0);
     }
 }

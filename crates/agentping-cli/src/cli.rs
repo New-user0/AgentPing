@@ -57,6 +57,10 @@ pub enum Command {
     Rules(RulesCommand),
     /// Show what AgentPing stores and sends.
     Privacy,
+    /// Route permission requests and questions to Discord while you are away.
+    Away,
+    /// Stop routing prompts to Discord (you are back at the keyboard).
+    Back,
     /// Manage the background daemon.
     #[command(subcommand)]
     Daemon(DaemonCommand),
@@ -136,6 +140,8 @@ pub enum SetupCommand {
     Discord(SetupDiscordArgs),
     /// Configure Telegram bot notifications.
     Telegram(SetupTelegramArgs),
+    /// Enable two-way control from Discord (bot: approve, answer, reply to continue).
+    DiscordBot(SetupDiscordBotArgs),
     /// WhatsApp support status and requirements.
     Whatsapp,
 }
@@ -193,6 +199,21 @@ pub struct SetupTelegramArgs {
     pub no_test: bool,
     /// Disable Telegram and delete the stored bot token.
     #[arg(long, conflicts_with_all = ["from_env", "stdin", "chat_id"])]
+    pub disable: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct SetupDiscordBotArgs {
+    #[command(flatten)]
+    pub input: SecretInput,
+    /// Channel the bot posts prompts in and reads replies from (default: the webhook's channel).
+    #[arg(long)]
+    pub channel_id: Option<String>,
+    /// Your Discord user id (skips pairing; otherwise you type a one-time code in the channel).
+    #[arg(long)]
+    pub user_id: Option<String>,
+    /// Disable remote interaction and delete the stored bot token.
+    #[arg(long, conflicts_with_all = ["from_env", "stdin", "channel_id", "user_id"])]
     pub disable: bool,
 }
 
@@ -356,6 +377,9 @@ pub struct UninstallArgs {
 pub struct HookArgs {
     /// Agent integration (currently `claude`).
     pub agent: String,
+    /// Wait in the background for a remote reply after the agent stops (asyncRewake hook).
+    #[arg(long)]
+    pub wait_reply: bool,
 }
 
 #[derive(Debug, Args)]
