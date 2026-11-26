@@ -38,15 +38,18 @@ session; a plain message goes to the most recent open prompt.
 
 ## When prompts go to Discord
 
-Permission requests and questions block Claude while the hook waits for your answer, so by
-default (`route = "when_away"`) they are routed to Discord only when you are away:
+While a permission request or question waits for a Discord answer, Claude Code does **not**
+show its local dialog (verified on Claude Code 2.1.332). So by default (`route = "when_away"`)
+they are routed to Discord only when you are away:
 
 - after `agentping away` (or sending `away` in Discord), until `agentping back` / `back`;
 - or automatically when no prompt has been typed locally for `away_after_minutes` (default 5).
 
 With `route = "always"`, every permission request and question is sent to Discord as well.
-If nobody answers within `decision_timeout_minutes` (default 10), the hook gives up and Claude's
-normal local prompt takes over. Typing in the terminal, finishing the turn or ending the session
+Back at your desk with a prompt still waiting in Discord? Run `agentping back` (or send `back`):
+open permission requests and questions are withdrawn and the normal terminal prompt appears
+immediately. If nobody answers within `decision_timeout_minutes` (default 10), the same happens
+automatically. Typing in the terminal, finishing the turn or ending the session
 withdraws open prompts; the Discord message is updated accordingly.
 
 "Reply to continue" never blocks: after each turn a background listener waits up to
@@ -90,8 +93,9 @@ After changing `[remote]`, run `agentping setup claude` (hook timeouts depend on
 ## Limitations
 
 - The daemon must be running; without it hooks behave as notify-only.
-- Whether Claude Code shows its local permission/question dialog while a waiting hook runs is not
-  documented; this is why routing defaults to "only when away".
+- The local dialog is hidden while a prompt waits for Discord; use `agentping back` to bring it
+  back immediately (or wait for `decision_timeout_minutes`). `route = "always"` is therefore only
+  advisable if you rarely work at the keyboard.
 - A reply to continue reaches Claude as a system reminder (that is how `asyncRewake` delivers
   output), not as a typed user message; Claude treats it as your next instruction.
 - `-p` (headless) runs end immediately, so reply-to-continue applies to interactive sessions.

@@ -330,3 +330,41 @@ async fn presence_controls_routing_when_away_only() {
     svc.set_away(false).await.unwrap();
     assert!(!svc.create(perm()).await.unwrap().routed);
 }
+
+#[tokio::test]
+async fn coming_back_moves_open_prompts_to_the_terminal() {
+    let (svc, _mock) = service().await;
+    let perm = svc
+        .create(create(InteractionRequest::Permission {
+            tool_name: "Bash".into(),
+            details: "ls".into(),
+        }))
+        .await
+        .unwrap()
+        .id
+        .unwrap();
+    let cont = svc
+        .create(create(InteractionRequest::Continue { last_message: None }))
+        .await
+        .unwrap()
+        .id
+        .unwrap();
+    svc.set_away(false).await.unwrap();
+    assert_eq!(
+        svc.wait(&perm, Duration::ZERO)
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        "cancelled"
+    );
+    // Reply listeners never block the terminal, so they stay open.
+    assert_eq!(
+        svc.wait(&cont, Duration::ZERO)
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        "pending"
+    );
+}

@@ -171,19 +171,43 @@ impl RemoteService {
     }
 
     /// Sets presence explicitly (`away` routes prompts; `back` returns to automatic).
+    ///
+    /// Claude Code does not show its local dialog while a hook waits for a remote answer, so
+    /// coming back also withdraws open permission requests and questions: their hooks stop
+    /// waiting and the normal terminal prompt appears.
     pub async fn set_away(&self, away: bool) -> anyhow::Result<()> {
-        with_db(&self.db, move |db| {
+        let moved = with_db(&self.db, move |db| {
             let now = Utc::now();
-            db.write(|s| {
+            Ok(db.write(|s| {
                 s.kv_set(PRESENCE_KEY, if away { "away" } else { "auto" }, now)?;
+                let mut moved = Vec::new();
                 if !away {
                     s.kv_set(LAST_BACK_KEY, &agentping_core::time::format_ts(now), now)?;
+                    for i in s.pending_interactions(now)? {
+                        if i.kind == InteractionKind::Continue {
+                            continue;
+                        }
+                        if let Some(r) = s.close_interaction(
+                            &i.id,
+                            InteractionStatus::Cancelled,
+                            "moved back to the terminal",
+                            now,
+                        )? {
+                            moved.push(r);
+                        }
+                    }
                 }
-                Ok(())
-            })?;
-            Ok(())
+                Ok(moved)
+            })?)
         })
-        .await
+        .await?;
+        if !moved.is_empty() {
+            self.changed.notify_waiters();
+            for rec in &moved {
+                self.mark_closed(rec, "💻 Moved back to the terminal").await;
+            }
+        }
+        Ok(())
     }
 
     fn connected(&self) -> bool {
