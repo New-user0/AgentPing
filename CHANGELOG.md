@@ -6,6 +6,11 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- Windows start-at-login uses a per-user Run registry entry instead of Task Scheduler, which
+  required administrator rights.
+
 ## [0.2.0] - 2026-11-27
 
 ### Added

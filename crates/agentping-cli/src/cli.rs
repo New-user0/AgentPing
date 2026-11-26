@@ -357,7 +357,7 @@ pub enum DaemonCommand {
     Status,
     /// Run the daemon in the foreground.
     Run,
-    /// Start the daemon automatically at login (systemd / launchd / Task Scheduler).
+    /// Start the daemon automatically at login (systemd / launchd / Windows login item).
     Install,
     /// Remove the login service.
     Uninstall,

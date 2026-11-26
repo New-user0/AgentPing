@@ -116,13 +116,13 @@ reads configuration at start; restart it after changes.
 | Config dir | `~/.config/agentping` | `~/Library/Application Support/agentping` | `%APPDATA%\agentping\config` |
 | Data/logs | `~/.local/share/agentping` | `~/Library/Application Support/agentping` | `%LOCALAPPDATA%\agentping\data` |
 | Secrets | Secret Service | Keychain | Credential Manager |
-| Start at login | systemd user unit | launchd agent | Task Scheduler (logon, current user) |
+| Start at login | systemd user unit | launchd agent | per-user Run registry entry (no admin) |
 | Hook shell | sh | sh | Git Bash if installed, else PowerShell |
 
-`AGENTPING_HOME` relocates everything (tests, portable installs). The Windows daemon runs as a
-scheduled task, not a Windows service, because services run as another account and could not
-read the user's credential store. Starting it from Task Scheduler briefly flashes a console
-window at logon.
+`AGENTPING_HOME` relocates everything (tests, portable installs). On Windows the daemon starts
+from a per-user login item (`HKCU\Software\Microsoft\Windows\CurrentVersion\Run`), not a Windows
+service: services run as another account and could not read the user's credential store, and the
+Run entry needs no administrator rights. A console window may flash briefly at logon.
 
 ## Extending
 

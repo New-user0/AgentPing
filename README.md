@@ -60,7 +60,7 @@ finished session with new instructions, right from Discord. See
 | Sessions | Concurrent sessions tracked per project with derived status (working, waiting for permission, …) |
 | Security | Secrets in the OS credential store, loopback-only API with token auth + Host/Origin checks, webhook host allow-list, redaction everywhere, no remote actions |
 | Diagnostics | `doctor` with actionable fixes, structured rotating logs, `events show` with per-attempt delivery history |
-| Platforms | Windows, macOS, Linux; optional start-at-login (Task Scheduler / launchd / systemd user unit) |
+| Platforms | Windows, macOS, Linux; optional start-at-login (Windows login item / launchd / systemd user unit) |
 
 ## Installation
 

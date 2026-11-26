@@ -2,14 +2,17 @@
 //!
 //! * Linux: systemd **user** unit (`~/.config/systemd/user/agentping.service`)
 //! * macOS: launchd agent (`~/Library/LaunchAgents/dev.agentping.daemon.plist`)
-//! * Windows: Task Scheduler task at logon (runs as the current user, so the OS credential
-//!   store is available; a Windows *service* would run as SYSTEM and could not read it)
+//! * Windows: a per-user `HKCU\...\CurrentVersion\Run` entry (no administrator rights needed;
+//!   runs as you, so the Credential Manager is available; a Windows *service* would run as
+//!   SYSTEM and could not read it)
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-/// Name of the Windows scheduled task.
-pub const WINDOWS_TASK_NAME: &str = "AgentPing Daemon";
+/// Registry key holding per-user login items on Windows.
+pub const WINDOWS_RUN_KEY: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
+/// Value name of AgentPing's login item.
+pub const WINDOWS_RUN_VALUE: &str = "AgentPing";
 /// systemd unit name.
 pub const SYSTEMD_UNIT: &str = "agentping.service";
 /// launchd label.
@@ -66,20 +69,9 @@ pub fn launchd_plist(exe: &Path, log_dir: &Path) -> String {
     )
 }
 
-/// Arguments for `schtasks /Create`.
-pub fn schtasks_create_args(exe: &Path) -> Vec<String> {
-    vec![
-        "/Create".into(),
-        "/TN".into(),
-        WINDOWS_TASK_NAME.into(),
-        "/SC".into(),
-        "ONLOGON".into(),
-        "/RL".into(),
-        "LIMITED".into(),
-        "/F".into(),
-        "/TR".into(),
-        format!("\"{}\" daemon start", exe.display()),
-    ]
+/// Command line registered as the Windows login item.
+pub fn windows_run_command(exe: &Path) -> String {
+    format!("\"{}\" daemon start", exe.display())
 }
 
 /// Where the service definition lives on this platform, if file-based.
@@ -117,12 +109,22 @@ fn run(program: &str, args: &[&str]) -> anyhow::Result<String> {
 /// Registers the daemon to start at login and starts it. Returns a description of what was done.
 pub fn install(exe: &Path, log_dir: &Path) -> anyhow::Result<String> {
     if cfg!(windows) {
-        let args = schtasks_create_args(exe);
-        let refs: Vec<&str> = args.iter().map(String::as_str).collect();
-        run("schtasks", &refs)?;
-        Ok(format!(
-            "Created scheduled task '{WINDOWS_TASK_NAME}' (runs at logon)"
-        ))
+        let command = windows_run_command(exe);
+        run(
+            "reg",
+            &[
+                "add",
+                WINDOWS_RUN_KEY,
+                "/v",
+                WINDOWS_RUN_VALUE,
+                "/t",
+                "REG_SZ",
+                "/d",
+                &command,
+                "/f",
+            ],
+        )?;
+        Ok("Registered AgentPing to start when you log in to Windows".to_owned())
     } else if cfg!(target_os = "linux") {
         let path = definition_path().ok_or_else(|| anyhow::anyhow!("no home directory"))?;
         agentping_core::fsutil::atomic_write(&path, systemd_unit(exe).as_bytes(), false)?;
@@ -150,8 +152,11 @@ pub fn install(exe: &Path, log_dir: &Path) -> anyhow::Result<String> {
 /// Removes the service registration.
 pub fn uninstall() -> anyhow::Result<String> {
     if cfg!(windows) {
-        run("schtasks", &["/Delete", "/TN", WINDOWS_TASK_NAME, "/F"])?;
-        Ok(format!("Removed scheduled task '{WINDOWS_TASK_NAME}'"))
+        run(
+            "reg",
+            &["delete", WINDOWS_RUN_KEY, "/v", WINDOWS_RUN_VALUE, "/f"],
+        )?;
+        Ok("Removed AgentPing from Windows login items".to_owned())
     } else if cfg!(target_os = "linux") {
         let _ = run("systemctl", &["--user", "disable", "--now", SYSTEMD_UNIT]);
         if let Some(path) = definition_path() {
@@ -173,8 +178,8 @@ pub fn uninstall() -> anyhow::Result<String> {
 /// Whether the service is registered.
 pub fn is_installed() -> bool {
     if cfg!(windows) {
-        Command::new("schtasks")
-            .args(["/Query", "/TN", WINDOWS_TASK_NAME])
+        Command::new("reg")
+            .args(["query", WINDOWS_RUN_KEY, "/v", WINDOWS_RUN_VALUE])
             .output()
             .map(|o| o.status.success())
             .unwrap_or(false)
@@ -204,12 +209,10 @@ mod tests {
     }
 
     #[test]
-    fn schtasks_quotes_path() {
-        let args = schtasks_create_args(Path::new(r"C:\Program Files\agentping.exe"));
+    fn windows_run_command_quotes_path() {
         assert_eq!(
-            args.last().unwrap(),
+            windows_run_command(Path::new(r"C:\Program Files\agentping.exe")),
             r#""C:\Program Files\agentping.exe" daemon start"#
         );
-        assert!(args.contains(&"ONLOGON".to_owned()));
     }
 }
