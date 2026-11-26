@@ -6,6 +6,7 @@ use serde_json::json;
 
 use super::*;
 use crate::provider::{http_client, FailureKind};
+use crate::render::char_len;
 use crate::render::render;
 use crate::testutil::{start, Canned};
 
@@ -62,7 +63,9 @@ fn webhook_validation_rejects_abuse_without_leaking_token() {
 
 #[test]
 fn payload_has_embed_push_preview_and_blocks_mentions() {
-    let p = build_payload(&notification(), "AgentPing");
+    let payloads = build_payloads(&notification(), "AgentPing");
+    assert_eq!(payloads.len(), 1);
+    let p = &payloads[0];
     assert_eq!(p["username"], "AgentPing");
     assert_eq!(p["allowed_mentions"], json!({ "parse": [] }));
     assert_eq!(
@@ -79,36 +82,70 @@ fn payload_has_embed_push_preview_and_blocks_mentions() {
 }
 
 #[test]
-fn payload_respects_discord_limits() {
+fn long_messages_are_split_not_truncated() {
     let mut n = notification();
     n.title = "t".repeat(1000);
-    n.body = "b".repeat(10_000);
+    let paragraph = "lorem ipsum dolor sit amet ".repeat(40);
+    n.body = format!(
+        "{paragraph}\n```rust\n{}\n```\n{paragraph}",
+        "let x = 1;\n".repeat(900)
+    ) + &paragraph.repeat(10);
     n.fields = (0..40)
         .map(|i| crate::render::Field {
             name: format!("f{i}"),
             value: "v".repeat(2000),
         })
         .collect();
-    let p = build_payload(&n, "AgentPing");
-    let embed = &p["embeds"][0];
-    let title = embed["title"].as_str().unwrap().chars().count();
-    let desc = embed["description"].as_str().unwrap().chars().count();
-    let fields = embed["fields"].as_array().unwrap();
-    assert!(title <= TITLE_LIMIT);
-    assert!(desc <= DESCRIPTION_LIMIT);
-    assert!(fields.len() <= 25);
-    let total: usize = title
-        + desc
-        + embed["footer"]["text"].as_str().unwrap().chars().count()
-        + fields
-            .iter()
+    let payloads = build_payloads(&n, "AgentPing");
+    assert!(payloads.len() > 2, "{} parts", payloads.len());
+    let mut all_text = String::new();
+    for (i, p) in payloads.iter().enumerate() {
+        let embed = &p["embeds"][0];
+        let title = embed["title"].as_str().unwrap();
+        let desc = embed["description"].as_str().unwrap();
+        let footer = embed["footer"]["text"].as_str().unwrap();
+        assert!(char_len(title) <= TITLE_LIMIT);
+        assert!(char_len(desc) <= DESCRIPTION_LIMIT);
+        assert!(footer.ends_with(&format!("part {}/{}", i + 1, payloads.len())));
+        assert_eq!(
+            desc.matches("```").count() % 2,
+            0,
+            "fences balanced in part {i}"
+        );
+        let fields: usize = embed["fields"]
+            .as_array()
             .map(|f| {
-                f["name"].as_str().unwrap().chars().count()
-                    + f["value"].as_str().unwrap().chars().count()
+                f.iter()
+                    .map(|f| {
+                        char_len(f["name"].as_str().unwrap())
+                            + char_len(f["value"].as_str().unwrap())
+                    })
+                    .sum()
             })
-            .sum::<usize>();
-    assert!(total <= EMBED_TOTAL_LIMIT, "total {total}");
-    assert!(p["content"].as_str().unwrap().chars().count() <= CONTENT_LIMIT);
+            .unwrap_or(0);
+        assert!(char_len(title) + char_len(desc) + char_len(footer) + fields <= EMBED_TOTAL_LIMIT);
+        assert_eq!(
+            p.get("content").is_some(),
+            i == 0,
+            "push preview only on part 1"
+        );
+        all_text.push_str(&desc.replace("```rust", "").replace("```", ""));
+    }
+    let squash = |s: &str| s.split_whitespace().collect::<String>();
+    assert_eq!(
+        squash(&all_text),
+        squash(&n.body.replace("```rust", "").replace("```", "")),
+        "no content lost"
+    );
+}
+
+#[tokio::test]
+async fn long_message_is_sent_as_multiple_parts() {
+    let (provider, server) = provider_for(vec![Canned::json(200, json!({ "id": "1" }))]).await;
+    let mut n = notification();
+    n.body = "word ".repeat(2000);
+    provider.send(&n).await.unwrap();
+    assert_eq!(server.requests.lock().unwrap().len(), 3);
 }
 
 #[tokio::test]

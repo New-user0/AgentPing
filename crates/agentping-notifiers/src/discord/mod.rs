@@ -10,9 +10,9 @@ use serde_json::{json, Value};
 use url::Url;
 
 use crate::provider::{
-    retry_after_header, Delivered, DeliveryError, NotificationProvider, ProviderHealth,
+    retry_after_header, Delivered, DeliveryError, FailureKind, NotificationProvider, ProviderHealth,
 };
-use crate::render::{truncate, RenderedNotification};
+use crate::render::{char_len, split_text, truncate, RenderedNotification};
 
 const ALLOWED_HOSTS: [&str; 4] = [
     "discord.com",
@@ -29,6 +29,7 @@ const FIELD_VALUE_LIMIT: usize = 1024;
 const FOOTER_LIMIT: usize = 2048;
 const CONTENT_LIMIT: usize = 2000;
 const EMBED_TOTAL_LIMIT: usize = 6000;
+const _: () = assert!(CHUNK_LIMIT + 8 <= DESCRIPTION_LIMIT);
 
 /// Validates a Discord webhook URL, returning a normalized URL.
 ///
@@ -97,47 +98,87 @@ pub fn color(event_type: &EventType, severity: Severity) -> u32 {
     }
 }
 
-/// Builds the webhook JSON payload for a notification.
-pub fn build_payload(n: &RenderedNotification, username: &str) -> Value {
+/// Description chunk size; leaves headroom under Discord's 4096 limit for code-fence repair.
+const CHUNK_LIMIT: usize = 3900;
+
+/// Closes and reopens Markdown code fences that a chunk boundary would otherwise break.
+fn balance_code_fences(chunks: Vec<String>) -> Vec<String> {
+    let mut out = Vec::with_capacity(chunks.len());
+    let mut open = false;
+    for chunk in chunks {
+        let mut text = if open { format!("```\n{chunk}") } else { chunk };
+        if text.matches("```").count() % 2 == 1 {
+            text.push_str("\n```");
+            open = true;
+        } else {
+            open = false;
+        }
+        out.push(text);
+    }
+    out
+}
+
+/// Builds the webhook payloads for a notification. Long messages are split across several
+/// messages (`part i/n` in the footer) instead of being truncated.
+pub fn build_payloads(n: &RenderedNotification, username: &str) -> Vec<Value> {
     let title = truncate(&n.title, TITLE_LIMIT);
-    let mut budget = EMBED_TOTAL_LIMIT.saturating_sub(title.chars().count());
-    let footer = truncate(&n.footer, FOOTER_LIMIT.min(budget));
-    budget = budget.saturating_sub(footer.chars().count());
     let mut fields = Vec::new();
+    let mut field_cost = 0;
     for f in n.fields.iter().take(25) {
         let name = truncate(&f.name, FIELD_NAME_LIMIT);
         let value = truncate(&f.value, FIELD_VALUE_LIMIT);
-        let cost = name.chars().count() + value.chars().count();
-        if cost > budget {
-            break;
-        }
-        budget -= cost;
+        field_cost += char_len(&name) + char_len(&value);
         fields.push(json!({ "name": name, "value": value, "inline": true }));
     }
-    let description = truncate(&n.body, DESCRIPTION_LIMIT.min(budget));
-
+    let mut chunks = balance_code_fences(split_text(&n.body, CHUNK_LIMIT, &char_len));
+    if chunks.is_empty() {
+        chunks.push(String::new());
+    }
+    let parts = chunks.len();
+    let color = color(&n.event_type, n.severity);
     // `content` drives the mobile push preview, so keep it short and meaningful.
     let content = match &n.project {
         Some(p) => format!("{} · {p}", n.title),
         None => n.title.clone(),
     };
-    let mut payload = json!({
-        "content": truncate(&content, CONTENT_LIMIT),
-        "embeds": [{
-            "title": title,
-            "description": description,
-            "color": color(&n.event_type, n.severity),
-            "fields": fields,
+    let mut payloads = Vec::with_capacity(parts);
+    for (i, chunk) in chunks.into_iter().enumerate() {
+        let footer_text = if parts > 1 {
+            format!("{} · part {}/{}", n.footer, i + 1, parts)
+        } else {
+            n.footer.clone()
+        };
+        let footer = truncate(&footer_text, FOOTER_LIMIT);
+        let embed_title = if i == 0 {
+            title.clone()
+        } else {
+            truncate(&format!("{title} (continued)"), TITLE_LIMIT)
+        };
+        let mut embed = json!({
+            "title": embed_title,
+            "description": chunk,
+            "color": color,
             "footer": { "text": footer },
             "timestamp": n.occurred_at.to_rfc3339(),
-        }],
-        // Never let agent-provided text ping @everyone, roles or users.
-        "allowed_mentions": { "parse": [] },
-    });
-    if !username.trim().is_empty() {
-        payload["username"] = Value::String(truncate(username.trim(), 80));
+        });
+        let used = char_len(&embed_title) + char_len(&chunk) + char_len(&footer);
+        if i == 0 && used + field_cost <= EMBED_TOTAL_LIMIT {
+            embed["fields"] = Value::Array(fields.clone());
+        }
+        let mut payload = json!({
+            "embeds": [embed],
+            // Never let agent-provided text ping @everyone, roles or users.
+            "allowed_mentions": { "parse": [] },
+        });
+        if i == 0 {
+            payload["content"] = Value::String(truncate(&content, CONTENT_LIMIT));
+        }
+        if !username.trim().is_empty() {
+            payload["username"] = Value::String(truncate(username.trim(), 80));
+        }
+        payloads.push(payload);
     }
-    payload
+    payloads
 }
 
 /// Delivers notifications through a Discord webhook.
@@ -175,28 +216,12 @@ impl DiscordProvider {
         url.query_pairs_mut().append_pair("wait", "true");
         url
     }
-}
 
-async fn error_text(resp: reqwest::Response) -> String {
-    let text = resp.text().await.unwrap_or_default();
-    serde_json::from_str::<Value>(&text)
-        .ok()
-        .and_then(|v| v.get("message").and_then(Value::as_str).map(str::to_owned))
-        .unwrap_or_else(|| truncate(text.trim(), 200))
-}
-
-#[async_trait]
-impl NotificationProvider for DiscordProvider {
-    fn name(&self) -> &'static str {
-        "discord"
-    }
-
-    async fn send(&self, n: &RenderedNotification) -> Result<Delivered, DeliveryError> {
-        let payload = build_payload(n, &self.username);
+    async fn post(&self, payload: &Value) -> Result<Delivered, DeliveryError> {
         let resp = self
             .http
             .post(self.send_url())
-            .json(&payload)
+            .json(payload)
             .send()
             .await
             .map_err(DeliveryError::from_transport)?;
@@ -242,6 +267,49 @@ impl NotificationProvider for DiscordProvider {
             ),
             code,
         ))
+    }
+}
+
+async fn error_text(resp: reqwest::Response) -> String {
+    let text = resp.text().await.unwrap_or_default();
+    serde_json::from_str::<Value>(&text)
+        .ok()
+        .and_then(|v| v.get("message").and_then(Value::as_str).map(str::to_owned))
+        .unwrap_or_else(|| truncate(text.trim(), 200))
+}
+
+#[async_trait]
+impl NotificationProvider for DiscordProvider {
+    fn name(&self) -> &'static str {
+        "discord"
+    }
+
+    async fn send(&self, n: &RenderedNotification) -> Result<Delivered, DeliveryError> {
+        let payloads = build_payloads(n, &self.username);
+        let mut last = Delivered { http_status: None };
+        for (i, payload) in payloads.iter().enumerate() {
+            let mut attempt = 0;
+            loop {
+                match self.post(payload).await {
+                    Ok(d) => {
+                        last = d;
+                        break;
+                    }
+                    // Once part 1 is out, retrying the whole notification would duplicate it,
+                    // so ride out short rate limits for the remaining parts in place.
+                    Err(DeliveryError {
+                        kind: FailureKind::Retryable { retry_after },
+                        ..
+                    }) if i > 0 && attempt < 3 => {
+                        attempt += 1;
+                        let wait = retry_after.unwrap_or(Duration::from_secs(2));
+                        tokio::time::sleep(wait.min(Duration::from_secs(10))).await;
+                    }
+                    Err(e) => return Err(e),
+                }
+            }
+        }
+        Ok(last)
     }
 
     async fn health_check(&self) -> ProviderHealth {

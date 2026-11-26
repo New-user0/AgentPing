@@ -6,6 +6,7 @@ use serde_json::json;
 
 use super::*;
 use crate::provider::{http_client, FailureKind};
+use crate::render::char_len;
 use crate::render::render;
 use crate::testutil::{start, Canned};
 
@@ -36,23 +37,31 @@ fn token_validation() {
 
 #[test]
 fn html_is_escaped_and_structured() {
-    let text = format_message(&notification());
+    let msgs = format_messages(&notification());
+    assert_eq!(msgs.len(), 1);
+    let text = &msgs[0];
     assert!(text.starts_with("<b>💬 Claude Code is asking a question</b>"));
     assert!(text.contains("&lt;Stripe &amp; PayPal&gt;"));
     assert!(text.contains("<b>Project:</b> ecommerce-app"));
 }
 
 #[test]
-fn long_messages_fit_the_limit() {
+fn long_messages_are_split_within_the_limit() {
     let mut n = notification();
-    n.body = "<&>".repeat(5000);
-    let text = format_message(&n);
-    assert!(
-        text.chars().count() <= MESSAGE_LIMIT,
-        "{}",
-        text.chars().count()
-    );
-    assert!(!text.contains("&am…"), "entity cut in half");
+    n.body = "<&> some words here\n".repeat(1200);
+    let msgs = format_messages(&n);
+    assert!(msgs.len() > 2);
+    for (i, m) in msgs.iter().enumerate() {
+        assert!(char_len(m) <= MESSAGE_LIMIT, "{}", char_len(m));
+        assert!(m.contains(&format!("part {}/{}", i + 1, msgs.len())));
+    }
+    let total: usize = msgs
+        .iter()
+        .map(|m| m.matches("some words here").count())
+        .sum();
+    assert_eq!(total, 1200, "no content lost");
+    assert!(msgs.last().unwrap().contains("<b>Project:</b>"));
+    assert!(!msgs[0].contains("<b>Project:</b>"));
 }
 
 #[tokio::test]

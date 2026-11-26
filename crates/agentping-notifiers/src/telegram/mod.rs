@@ -11,8 +11,10 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use url::Url;
 
-use crate::provider::{Delivered, DeliveryError, NotificationProvider, ProviderHealth};
-use crate::render::RenderedNotification;
+use crate::provider::{
+    Delivered, DeliveryError, FailureKind, NotificationProvider, ProviderHealth,
+};
+use crate::render::{char_len, split_text, RenderedNotification};
 
 const API_BASE: &str = "https://api.telegram.org";
 const MESSAGE_LIMIT: usize = 4096;
@@ -42,8 +44,9 @@ pub fn escape_html(text: &str) -> String {
     out
 }
 
-/// Formats a notification as Telegram HTML, within the message length limit.
-pub fn format_message(n: &RenderedNotification) -> String {
+/// Formats a notification as one or more Telegram HTML messages, each within the 4096
+/// character limit. Long bodies are split rather than truncated.
+pub fn format_messages(n: &RenderedNotification) -> Vec<String> {
     let mut fields = String::new();
     for f in &n.fields {
         fields.push_str(&format!(
@@ -53,34 +56,32 @@ pub fn format_message(n: &RenderedNotification) -> String {
         ));
     }
     let header = format!("<b>{}</b>\n", escape_html(&n.title));
-    let footer = format!("\n\n<i>{}</i>", escape_html(&n.footer));
-    let overhead = header.chars().count() + fields.chars().count() + footer.chars().count() + 2;
-    let body_budget = MESSAGE_LIMIT.saturating_sub(overhead).max(1);
-    let body = escape_truncated(&n.body, body_budget);
-    format!("{header}\n{body}\n{fields}{footer}")
-}
-
-/// Escapes `text`, keeping the escaped result within `budget` characters without ever cutting
-/// an HTML entity in half.
-fn escape_truncated(text: &str, budget: usize) -> String {
-    let full = escape_html(text);
-    if full.chars().count() <= budget {
-        return full;
+    let continued = format!("<b>{} (continued)</b>\n", escape_html(&n.title));
+    // Reserve room for the header, the fields/footer (on the last part) and the part label.
+    let reserve = char_len(&continued) + char_len(&fields) + char_len(&escape_html(&n.footer)) + 40;
+    let budget = MESSAGE_LIMIT.saturating_sub(reserve).max(200);
+    let measure = |s: &str| char_len(&escape_html(s));
+    let mut chunks = split_text(&n.body, budget, &measure);
+    if chunks.is_empty() {
+        chunks.push(String::new());
     }
-    let mut out = String::new();
-    let mut used = 0;
-    let mut buf = [0u8; 4];
-    for c in text.chars() {
-        let escaped = escape_html(c.encode_utf8(&mut buf));
-        let len = escaped.chars().count();
-        if used + len > budget.saturating_sub(1) {
-            break;
-        }
-        out.push_str(&escaped);
-        used += len;
-    }
-    out.push('…');
-    out
+    let parts = chunks.len();
+    let footer = escape_html(&n.footer);
+    chunks
+        .iter()
+        .enumerate()
+        .map(|(i, chunk)| {
+            let head = if i == 0 { &header } else { &continued };
+            let body = escape_html(chunk);
+            let label = if parts > 1 {
+                format!(" · part {}/{parts}", i + 1)
+            } else {
+                String::new()
+            };
+            let tail = if i + 1 == parts { fields.as_str() } else { "" };
+            format!("{head}\n{body}\n{tail}\n\n<i>{footer}{label}</i>")
+        })
+        .collect()
 }
 
 #[derive(Debug, Deserialize)]
@@ -265,21 +266,44 @@ impl NotificationProvider for TelegramProvider {
     }
 
     async fn send(&self, n: &RenderedNotification) -> Result<Delivered, DeliveryError> {
-        let body = json!({
-            "chat_id": self.chat_id,
-            "text": format_message(n),
-            "parse_mode": "HTML",
-            "link_preview_options": { "is_disabled": true },
-            "disable_notification": self.silent_low_severity && n.severity == Severity::Low,
-        });
-        let (status, resp) = self.call("sendMessage", &body).await?;
-        if resp.ok {
-            Ok(Delivered {
-                http_status: Some(status),
-            })
-        } else {
-            Err(classify(status, resp))
+        let mut last = Delivered { http_status: None };
+        for (i, text) in format_messages(n).iter().enumerate() {
+            let silent = i > 0 || (self.silent_low_severity && n.severity == Severity::Low);
+            let body = json!({
+                "chat_id": self.chat_id,
+                "text": text,
+                "parse_mode": "HTML",
+                "link_preview_options": { "is_disabled": true },
+                "disable_notification": silent,
+            });
+            let mut attempt = 0;
+            loop {
+                let result = match self.call("sendMessage", &body).await {
+                    Ok((status, resp)) if resp.ok => Ok(status),
+                    Ok((status, resp)) => Err(classify(status, resp)),
+                    Err(e) => Err(e),
+                };
+                match result {
+                    Ok(status) => {
+                        last = Delivered {
+                            http_status: Some(status),
+                        };
+                        break;
+                    }
+                    // Avoid re-sending earlier parts: wait out short rate limits in place.
+                    Err(DeliveryError {
+                        kind: FailureKind::Retryable { retry_after },
+                        ..
+                    }) if i > 0 && attempt < 3 => {
+                        attempt += 1;
+                        let wait = retry_after.unwrap_or(Duration::from_secs(2));
+                        tokio::time::sleep(wait.min(Duration::from_secs(10))).await;
+                    }
+                    Err(e) => return Err(e),
+                }
+            }
         }
+        Ok(last)
     }
 
     async fn health_check(&self) -> ProviderHealth {

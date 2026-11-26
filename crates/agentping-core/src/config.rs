@@ -244,7 +244,8 @@ pub struct NotificationsConfig {
     pub include_message: bool,
     /// Include full project paths in notifications (otherwise only the project name).
     pub include_project_path: bool,
-    /// Truncate message text to this many characters.
+    /// Truncate message text to this many characters (`0` = never truncate; long messages are
+    /// split across several provider messages instead).
     pub max_message_chars: usize,
     /// Suppress repeated notifications of the same type for the same session within this window.
     pub repeat_window_secs: u64,
@@ -264,7 +265,7 @@ impl Default for NotificationsConfig {
             other_notifications: true,
             include_message: true,
             include_project_path: false,
-            max_message_chars: 600,
+            max_message_chars: 0,
             repeat_window_secs: 60,
             filters: FiltersConfig::default(),
         }
@@ -550,10 +551,14 @@ impl Config {
                 "must be 80 characters or fewer".into(),
             );
         }
-        if !(40..=3500).contains(&self.notifications.max_message_chars) {
+        let max = self.notifications.max_message_chars;
+        if max != 0 && !(40..=crate::event::MAX_MESSAGE_CHARS).contains(&max) {
             issue(
                 "notifications.max_message_chars",
-                "must be between 40 and 3500".into(),
+                format!(
+                    "must be 0 (no limit) or between 40 and {}",
+                    crate::event::MAX_MESSAGE_CHARS
+                ),
             );
         }
         for (field, value) in [
@@ -817,7 +822,7 @@ session_events = false
 other_notifications = true
 include_message = true        # include agent message text in notifications
 include_project_path = false  # include full paths (otherwise project name only)
-max_message_chars = 600
+max_message_chars = 0         # 0 = full text (long messages are split); otherwise truncate
 repeat_window_secs = 60       # suppress identical event types per session within this window
 
 [notifications.filters]

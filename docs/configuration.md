@@ -68,7 +68,7 @@ Credentials come from (in order): environment variables `AGENTPING_DISCORD_WEBHO
 | `other_notifications` | `true` | generic `notification` events |
 | `include_message` | `true` | Include agent text (redacted, truncated) |
 | `include_project_path` | `false` | Include full project paths |
-| `max_message_chars` | `600` | Truncation length (40–3500) |
+| `max_message_chars` | `0` | `0` = send the full text (long messages are split into several messages, "part 1/3"…); otherwise truncate to this many characters |
 | `repeat_window_secs` | `60` | Suppress repeated `agent_idle`, `task_completed`, `notification`, session events for the same session within this window (0 disables) |
 
 ```toml

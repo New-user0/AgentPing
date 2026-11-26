@@ -16,6 +16,30 @@ pub const EVENT_SCHEMA_VERSION: u32 = 1;
 
 /// Maximum accepted length (in bytes) of an event message.
 pub const MAX_MESSAGE_BYTES: usize = 64 * 1024;
+/// Messages longer than this many characters are shortened by [`clamp_message`] so that they
+/// always fit [`MAX_MESSAGE_BYTES`] (4 bytes per char worst case, plus the marker).
+pub const MAX_MESSAGE_CHARS: usize = 15_000;
+
+/// Caps very long agent text (keeping the beginning and the end, which usually hold the
+/// summary and the conclusion) so the event is never rejected for size.
+pub fn clamp_message(text: &str) -> String {
+    let total = text.chars().count();
+    if total <= MAX_MESSAGE_CHARS {
+        return text.to_owned();
+    }
+    let head = MAX_MESSAGE_CHARS * 2 / 3;
+    let tail = MAX_MESSAGE_CHARS - head;
+    let start: String = text.chars().take(head).collect();
+    let end: String = text.chars().skip(total - tail).collect();
+    format!(
+        "{start}
+
+[… {} characters omitted by AgentPing …]
+
+{end}",
+        total - head - tail
+    )
+}
 /// Maximum accepted length (in bytes) of short text fields (titles, names, ids).
 pub const MAX_SHORT_FIELD_BYTES: usize = 4 * 1024;
 /// Maximum accepted size of serialized metadata.
@@ -520,6 +544,17 @@ mod tests {
             e.validate(),
             Err(EventValidationError::UnsupportedSchema(99))
         );
+    }
+
+    #[test]
+    fn clamp_message_keeps_head_and_tail_within_limits() {
+        assert_eq!(clamp_message("short"), "short");
+        let long = format!("BEGIN{}END", "é".repeat(40_000));
+        let clamped = clamp_message(&long);
+        assert!(clamped.starts_with("BEGIN"));
+        assert!(clamped.ends_with("END"));
+        assert!(clamped.contains("characters omitted"));
+        assert!(clamped.len() <= MAX_MESSAGE_BYTES);
     }
 
     #[test]

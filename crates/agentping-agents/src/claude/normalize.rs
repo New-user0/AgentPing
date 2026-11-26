@@ -61,6 +61,10 @@ impl AgentAdapter for ClaudeAdapter {
             tracing::debug!(hook, "ignoring Claude Code hook event");
             return Ok(None);
         };
+        event.message = event
+            .message
+            .as_deref()
+            .map(agentping_core::event::clamp_message);
         event.occurred_at = ctx.received_at;
         event.source.integration = INTEGRATION_ID.to_owned();
         event.source.native_event = Some(hook.to_owned());

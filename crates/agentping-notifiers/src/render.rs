@@ -116,6 +116,88 @@ pub fn truncate(text: &str, max: usize) -> String {
     out
 }
 
+/// Splits `text` into chunks whose `measure` is at most `max`, preferring to break after a
+/// line ending in the second half of a chunk, then between words, and only then inside words.
+pub fn split_text(text: &str, max: usize, measure: &dyn Fn(&str) -> usize) -> Vec<String> {
+    let max = max.max(1);
+    let text = text.trim_end();
+    if measure(text) <= max {
+        return if text.is_empty() {
+            Vec::new()
+        } else {
+            vec![text.to_owned()]
+        };
+    }
+    let mut pieces: Vec<String> = Vec::new();
+    for line in text.split_inclusive('\n') {
+        for word in line.split_inclusive(' ') {
+            if measure(word) <= max {
+                pieces.push(word.to_owned());
+                continue;
+            }
+            let mut cur = String::new();
+            let mut cur_len = 0;
+            let mut buf = [0u8; 4];
+            for c in word.chars() {
+                let len = measure(c.encode_utf8(&mut buf));
+                if cur_len + len > max && !cur.is_empty() {
+                    pieces.push(std::mem::take(&mut cur));
+                    cur_len = 0;
+                }
+                cur.push(c);
+                cur_len += len;
+            }
+            if !cur.is_empty() {
+                pieces.push(cur);
+            }
+        }
+    }
+    let mut chunks: Vec<String> = Vec::new();
+    let mut cur: Vec<String> = Vec::new();
+    let mut cur_len = 0usize;
+    for piece in pieces {
+        let len = measure(&piece);
+        if cur_len + len > max && !cur.is_empty() {
+            let mut cut = cur.len();
+            let mut acc = 0;
+            let mut best = None;
+            for (i, p) in cur.iter().enumerate() {
+                acc += measure(p);
+                if p.ends_with('\n') && acc >= max / 2 && i + 1 < cur.len() {
+                    best = Some(i + 1);
+                }
+            }
+            if let Some(b) = best {
+                cut = b;
+            }
+            let rest = cur.split_off(cut);
+            chunks.push(cur.concat());
+            cur = rest;
+            cur_len = cur.iter().map(|p| measure(p)).sum();
+            if cur_len + len > max && !cur.is_empty() {
+                chunks.push(cur.concat());
+                cur.clear();
+                cur_len = 0;
+            }
+        }
+        cur_len += len;
+        cur.push(piece);
+    }
+    if !cur.is_empty() {
+        chunks.push(cur.concat());
+    }
+    chunks
+        .into_iter()
+        .map(|c| c.trim_end().to_owned())
+        .filter(|c| !c.trim().is_empty())
+        .collect()
+}
+
+/// Character count, the unit most providers use for limits.
+pub fn char_len(s: &str) -> usize {
+    s.chars().count()
+}
+
 /// Renders a notification for `event` with the effective `severity`.
 pub fn render(event: &Event, severity: Severity, config: &Config) -> RenderedNotification {
     let prefs = &config.notifications;
@@ -124,7 +206,13 @@ pub fn render(event: &Event, severity: Severity, config: &Config) -> RenderedNot
         .as_deref()
         .map(str::trim)
         .filter(|m| !m.is_empty() && prefs.include_message)
-        .map(|m| truncate(&redact(m), prefs.max_message_chars));
+        .map(|m| {
+            let redacted = redact(m);
+            match prefs.max_message_chars {
+                0 => redacted.into_owned(),
+                max => truncate(&redacted, max),
+            }
+        });
     let emoji = emoji(&event.event_type, severity);
     let project = event.project_name.clone();
 
@@ -302,13 +390,15 @@ mod tests {
     }
 
     #[test]
-    fn message_is_redacted_and_truncated() {
+    fn message_is_redacted_and_truncated_when_limited() {
         let mut e = perm();
         e.message = Some(format!(
             "use key sk-ant-abcdefghijklmnopqrstuvwxyz {}",
             "x".repeat(2000)
         ));
-        let n = render(&e, Severity::High, &Config::default());
+        let mut c = Config::default();
+        c.notifications.max_message_chars = 600;
+        let n = render(&e, Severity::High, &c);
         assert!(!n.body.contains("abcdefghijklmnop"));
         assert!(n.body.chars().count() <= 600);
         assert!(n.body.ends_with('…'));
@@ -343,6 +433,40 @@ mod tests {
             n.body,
             "Claude needs your permission to use Bash (severity urgent) {unknown} {not valid}"
         );
+    }
+
+    #[test]
+    fn split_text_keeps_everything_and_respects_limits() {
+        let para = "word ".repeat(30);
+        let text = format!("{para}\n\n{para}\n{}\n{para}", "x".repeat(250));
+        let chunks = split_text(&text, 100, &char_len);
+        assert!(chunks.len() > 3);
+        assert!(chunks.iter().all(|c| char_len(c) <= 100), "{chunks:?}");
+        let rejoined: String = chunks.concat().split_whitespace().collect();
+        let original: String = text.split_whitespace().collect();
+        assert_eq!(rejoined, original, "no content lost");
+        assert_eq!(split_text("short", 100, &char_len), vec!["short"]);
+        assert!(split_text("   ", 100, &char_len).is_empty());
+    }
+
+    #[test]
+    fn split_text_prefers_line_breaks() {
+        let text = format!(
+            "{}\n{}",
+            "a ".repeat(30).trim_end(),
+            "b ".repeat(30).trim_end()
+        );
+        let chunks = split_text(&text, 80, &char_len);
+        assert_eq!(chunks.len(), 2);
+        assert!(chunks[0].chars().all(|c| c == 'a' || c == ' '));
+    }
+
+    #[test]
+    fn full_message_is_kept_by_default() {
+        let mut e = perm();
+        e.message = Some("y".repeat(5000));
+        let n = render(&e, Severity::High, &Config::default());
+        assert_eq!(n.body.chars().count(), 5000);
     }
 
     #[test]
