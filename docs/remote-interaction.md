@@ -38,6 +38,11 @@ session; a plain message goes to the most recent open prompt.
 
 ## When prompts go to Discord
 
+Projects and event types you muted for notifications (`[notifications]` toggles,
+`notifications.filters`, `[[rules]]` with `notify = false`) are never routed: their prompts stay
+in the terminal and finished sessions don't listen for replies. Quiet hours and provider
+selection only affect notifications.
+
 While a permission request or question waits for a Discord answer, Claude Code does **not**
 show its local dialog (verified on Claude Code 2.1.332). So by default (`route = "when_away"`)
 they are routed to Discord only when you are away:

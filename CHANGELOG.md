@@ -8,6 +8,10 @@ All notable changes to this project are documented here. The format follows
 
 ### Changed
 
+- Two-way prompts follow notification policy: muted projects/event types (filters, toggles,
+  `notify = false` rules) keep their prompts in the terminal.
+- Setup no longer asks to restart Claude Code sessions: settings are reloaded automatically.
+
 - Windows start-at-login uses a per-user Run registry entry instead of Task Scheduler, which
   required administrator rights.
 

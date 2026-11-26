@@ -83,8 +83,9 @@ agentping setup claude --remove [--scope …]
 
 Existing settings and hooks are preserved, a timestamped backup
 (`settings.json.agentping-backup-YYYYMMDD-HHMMSS`) is written first, re-running is idempotent and
-updates a moved binary path, and invalid JSON is never modified. Restart Claude Code sessions
-after installing; `agentping doctor` verifies registration.
+updates a moved binary path, and invalid JSON is never modified. Claude Code watches its settings
+files, so running sessions pick up the change without a restart (`/hooks` lists what is active);
+`agentping doctor` verifies registration.
 
 ## Limitations
 

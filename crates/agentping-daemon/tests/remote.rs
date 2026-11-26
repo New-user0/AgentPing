@@ -79,6 +79,7 @@ fn create(request: InteractionRequest) -> CreateInteraction {
         agent_name: "Claude Code".into(),
         session_id: Some("s1".into()),
         project_name: Some("api".into()),
+        project_path: None,
         request,
         timeout_secs: 600,
         supersedes_cancel_key: None,
@@ -367,4 +368,33 @@ async fn coming_back_moves_open_prompts_to_the_terminal() {
             .status,
         "pending"
     );
+}
+
+#[tokio::test]
+async fn muted_projects_keep_prompts_in_the_terminal() {
+    let (base, _mock) = start_mock().await;
+    let mut config = Config::default();
+    config.remote.enabled = true;
+    config.remote.discord_channel_id = Some(CHANNEL.into());
+    config.remote.discord_user_ids = vec![ME.into()];
+    config.remote.route = RemoteRoute::Always;
+    config.notifications.filters.exclude_projects = vec!["api".into()];
+    let db = Arc::new(Mutex::new(Database::open_in_memory().unwrap()));
+    let api = DiscordApi::with_base(reqwest::Client::new(), Secret::new("t"), &base);
+    let svc = RemoteService::new(db, Arc::new(config), api).unwrap();
+    svc.on_event(GatewayEvent::Ready {
+        bot_user_id: "bot".into(),
+    })
+    .await;
+    for request in [
+        InteractionRequest::Permission {
+            tool_name: "Bash".into(),
+            details: "ls".into(),
+        },
+        InteractionRequest::Continue { last_message: None },
+    ] {
+        let res = svc.create(create(request)).await.unwrap();
+        assert!(!res.routed);
+        assert!(res.reason.unwrap().contains("excluded"));
+    }
 }

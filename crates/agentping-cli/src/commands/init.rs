@@ -177,7 +177,7 @@ pub fn run(ctx: &Ctx, args: &InitArgs) -> anyhow::Result<()> {
     }
     if install_hooks {
         ui::ok("Claude Code will ping you when it needs permission, asks a question, finishes or fails");
-        ui::hint("Restart open Claude Code sessions to activate the hooks.");
+        ui::hint("Open Claude Code sessions reload the hooks automatically (check with /hooks).");
     }
     ui::hint("Run `agentping doctor` any time to verify the setup.");
     if interactive {

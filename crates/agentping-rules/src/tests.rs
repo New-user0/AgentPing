@@ -229,3 +229,35 @@ fn decision_summary_is_readable() {
         "notify via discord, telegram (default preferences)"
     );
 }
+
+#[test]
+fn remote_routing_follows_project_policy_but_not_quiet_hours_or_providers() {
+    let mut c = Config::default(); // no providers enabled at all
+    c.notifications.filters.exclude_projects = vec!["sandbox".into()];
+    c.quiet_hours.enabled = true;
+    c.quiet_hours.start = "00:00".into();
+    c.quiet_hours.end = "23:59".into();
+    c.rules = vec![RuleConfig {
+        name: "mute client work".into(),
+        projects: vec!["client".into()],
+        notify: false,
+        ..Default::default()
+    }];
+    let engine = RulesEngine::new(&c).unwrap();
+    assert!(engine
+        .remote_allowed(&event(EventType::PermissionRequest, "api"))
+        .is_ok());
+    let err = engine
+        .remote_allowed(&event(EventType::PermissionRequest, "sandbox"))
+        .unwrap_err();
+    assert!(err.contains("sandbox"), "{err}");
+    assert!(engine
+        .remote_allowed(&event(EventType::UserQuestion, "client"))
+        .unwrap_err()
+        .contains("mute client work"));
+    c.notifications.permission_requests = false;
+    let engine = RulesEngine::new(&c).unwrap();
+    assert!(engine
+        .remote_allowed(&event(EventType::PermissionRequest, "api"))
+        .is_err());
+}

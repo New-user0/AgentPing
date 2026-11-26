@@ -97,7 +97,7 @@ pub fn install_claude_hooks(ctx: &Ctx, scope: Scope, dry_run: bool) -> anyhow::R
     ui::hint(&format!(
         "Hooks run `agentping hook claude` via {shell_label}."
     ));
-    ui::hint("Restart running Claude Code sessions so they pick up the new hooks.");
+    ui::hint("Running Claude Code sessions reload settings automatically; check with /hooks.");
     Ok(())
 }
 

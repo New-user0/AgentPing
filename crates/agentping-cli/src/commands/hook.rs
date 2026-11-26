@@ -119,6 +119,7 @@ fn handle(agent: &str, wait_reply: bool, paths: &Paths, config: &Config) -> anyh
         agent_name: event.agent_name.clone(),
         session_id: event.session_id.clone(),
         project_name: event.project_name.clone(),
+        project_path: event.project_path.clone(),
         request: candidate.request,
         timeout_secs: u64::from(timeout_minutes) * 60,
         supersedes_cancel_key: candidate.supersedes_cancel_key,

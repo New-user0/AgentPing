@@ -75,6 +75,12 @@ impl Decision {
     }
 }
 
+struct Policy<'a> {
+    severity: Severity,
+    restrict: Option<&'a [String]>,
+    reason: String,
+}
+
 struct CompiledRule {
     config: RuleConfig,
     path_globs: Vec<GlobMatcher>,
@@ -186,23 +192,41 @@ impl RulesEngine {
         (suppressible && secs > 0).then(|| Duration::from_secs(secs))
     }
 
+    /// Whether two-way prompts for this event may be routed to a remote channel.
+    ///
+    /// Uses the same policy as notifications (global and agent switches, the first matching
+    /// rule, per-type toggles and project filters) but not providers, quiet hours or repeat
+    /// suppression, which only concern notification delivery. A project you muted therefore
+    /// keeps its prompts in the terminal.
+    pub fn remote_allowed(&self, event: &Event) -> Result<(), String> {
+        self.policy(event).map(|_| ()).map_err(|d| d.reason)
+    }
+
     /// Evaluates `event`.
     pub fn evaluate(&self, event: &Event, ctx: &RuleContext) -> Decision {
+        match self.policy(event) {
+            Ok(p) => self.deliver(event, ctx, p),
+            Err(muted) => muted,
+        }
+    }
+
+    /// Mute decisions that depend only on the event (not on providers or time).
+    fn policy(&self, event: &Event) -> Result<Policy<'_>, Decision> {
         let mut severity = event.severity;
         if event.event_type == EventType::Activity {
-            return Decision::mute(severity, "status-only event");
+            return Err(Decision::mute(severity, "status-only event"));
         }
         if !self.config.general.notifications_enabled {
-            return Decision::mute(
+            return Err(Decision::mute(
                 severity,
                 "notifications are disabled (general.notifications_enabled)",
-            );
+            ));
         }
         if event.agent == agentping_core::AgentKind::Claude && !self.config.agents.claude.enabled {
-            return Decision::mute(
+            return Err(Decision::mute(
                 severity,
                 "the Claude Code integration is disabled (agents.claude.enabled)",
-            );
+            ));
         }
 
         let mut restrict: Option<&[String]> = None;
@@ -215,7 +239,10 @@ impl RulesEngine {
             Some((index, rule)) => {
                 let label = rule.label(index);
                 if !rule.config.notify {
-                    return Decision::mute(severity, format!("{label} mutes this event"));
+                    return Err(Decision::mute(
+                        severity,
+                        format!("{label} mutes this event"),
+                    ));
                 }
                 if let Some(s) = rule.config.severity {
                     severity = s;
@@ -228,13 +255,13 @@ impl RulesEngine {
             None => {
                 let n = &self.config.notifications;
                 if !n.enabled_for(&event.event_type) {
-                    return Decision::mute(
+                    return Err(Decision::mute(
                         severity,
                         format!(
                             "{} notifications are turned off in [notifications]",
                             event.event_type
                         ),
-                    );
+                    ));
                 }
                 if let Some(project) = event.project_name.as_deref() {
                     if n.filters
@@ -242,10 +269,10 @@ impl RulesEngine {
                         .iter()
                         .any(|p| p.eq_ignore_ascii_case(project))
                     {
-                        return Decision::mute(
+                        return Err(Decision::mute(
                             severity,
                             format!("project '{project}' is excluded"),
-                        );
+                        ));
                     }
                 }
                 if !n.filters.include_projects.is_empty() {
@@ -256,12 +283,29 @@ impl RulesEngine {
                             .any(|p| p.eq_ignore_ascii_case(project))
                     });
                     if !included {
-                        return Decision::mute(severity, "project is not in include_projects");
+                        return Err(Decision::mute(
+                            severity,
+                            "project is not in include_projects",
+                        ));
                     }
                 }
                 "default preferences".to_owned()
             }
         };
+        Ok(Policy {
+            severity,
+            restrict,
+            reason,
+        })
+    }
+
+    /// Provider selection, quiet hours and repeat suppression.
+    fn deliver(&self, event: &Event, ctx: &RuleContext, policy: Policy<'_>) -> Decision {
+        let Policy {
+            severity,
+            restrict,
+            reason,
+        } = policy;
 
         let enabled = self.config.providers.enabled_names();
         let providers: Vec<String> = enabled

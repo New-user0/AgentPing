@@ -87,7 +87,7 @@ the OS credential store), sends a test notification, installs the Claude Code ho
 existing settings are preserved and backed up), optionally starts the daemon at login, and runs
 diagnostics.
 
-Then restart any open Claude Code sessions and walk away. 🚶
+Open Claude Code sessions pick up the hooks automatically. Walk away. 🚶
 
 Scripted setup:
 
@@ -149,7 +149,7 @@ from stdin, never writes to stdout/stderr, always exits 0, and typically finishe
 Notes:
 
 - On Windows the hook is pinned to Git Bash (`"shell": "bash"`) when it is installed, otherwise
-  PowerShell. Claude Code reads hooks at session start, so restart running sessions.
+  PowerShell. Running sessions reload settings automatically (verify with `/hooks`).
 - AgentPing **never approves or answers anything**. It only observes. See
   [docs/integrations/claude-code.md](docs/integrations/claude-code.md).
 

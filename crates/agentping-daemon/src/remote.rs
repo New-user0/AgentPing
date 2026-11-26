@@ -61,6 +61,7 @@ pub struct RemoteService {
     api: DiscordApi,
     channel_id: String,
     allowed: HashSet<String>,
+    rules: agentping_rules::RulesEngine,
     state: Mutex<State>,
     changed: Notify,
 }
@@ -103,12 +104,14 @@ impl RemoteService {
             .filter(|c| !c.is_empty())
             .ok_or_else(|| anyhow::anyhow!("remote.discord_channel_id is not set"))?;
         let allowed = config.remote.discord_user_ids.iter().cloned().collect();
+        let rules = agentping_rules::RulesEngine::new(&config)?;
         Ok(Arc::new(Self {
             db,
             config,
             api,
             channel_id,
             allowed,
+            rules,
             state: Mutex::new(State::default()),
             changed: Notify::new(),
         }))
@@ -230,6 +233,10 @@ impl RemoteService {
         };
         if !enabled {
             return Ok(not_routed("disabled in [remote]"));
+        }
+        // Projects and event types you muted for notifications stay local for prompts too.
+        if let Err(reason) = self.rules.remote_allowed(&policy_event(&req, kind)) {
+            return Ok(not_routed(&reason));
         }
         if !self.connected() {
             return Ok(not_routed("the Discord bot is not connected"));
@@ -788,6 +795,24 @@ impl RemoteService {
             .await?;
         Ok(())
     }
+}
+
+/// The event a prompt corresponds to, for evaluating notification policy.
+fn policy_event(req: &CreateInteraction, kind: InteractionKind) -> agentping_core::Event {
+    let event_type = match kind {
+        InteractionKind::Permission => agentping_core::EventType::PermissionRequest,
+        InteractionKind::Question => agentping_core::EventType::UserQuestion,
+        InteractionKind::Continue => agentping_core::EventType::TaskCompleted,
+    };
+    let agent = req
+        .agent
+        .parse()
+        .unwrap_or(agentping_core::AgentKind::Claude);
+    let mut e = agentping_core::Event::new(event_type, agent, Utc::now());
+    e.session_id = req.session_id.clone();
+    e.project_name = req.project_name.clone();
+    e.project_path = req.project_path.clone();
+    e
 }
 
 fn partial_answers(rec: &InteractionRecord) -> BTreeMap<String, String> {

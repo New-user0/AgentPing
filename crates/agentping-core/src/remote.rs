@@ -98,6 +98,9 @@ pub struct CreateInteraction {
     /// Project name.
     #[serde(default)]
     pub project_name: Option<String>,
+    /// Project path (used by `project_paths` rules).
+    #[serde(default)]
+    pub project_path: Option<String>,
     /// What is being asked.
     pub request: InteractionRequest,
     /// How long the hook will wait.
