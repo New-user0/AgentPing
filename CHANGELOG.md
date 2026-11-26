@@ -6,6 +6,22 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-27
+
+### Added
+
+- Two-way control through a Discord bot (opt-in): approve/deny permissions, answer questions
+  (buttons, menus or text), reply to a finished/idle ping to continue (asyncRewake), `status` /
+  `away` / `back` / `help` commands; `agentping setup discord-bot` with one-time-code pairing;
+  `agentping away|back`; Discord Gateway client with resume/reconnect.
+- Permission pings include the exact command, file or diff (from the `PermissionRequest` hook).
+- Notifications record provider message ids so replies map to sessions.
+
+### Changed
+
+- Full message text by default: long notifications are split into several messages
+  ("part 1/3"), never truncated (`notifications.max_message_chars = 0`).
+
 ## [0.1.0] - 2026-11-27
 
 First milestone: Claude Code → AgentPing → Discord/Telegram → phone, end to end.

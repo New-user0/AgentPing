@@ -1,52 +1,98 @@
-# Remote interaction (design, not implemented)
+# Two-way remote interaction (Discord)
 
-Status: **design only.** Nothing in AgentPing v0.1 can approve, answer, or send input to an
-agent remotely. This document constrains how that may be added.
+Status: **implemented, opt-in** (disabled by default). Reply from Discord and Claude Code acts on
+it, using only mechanisms the Claude Code hooks API documents. There is **no shell access** from
+Discord: everything goes through Claude's own permission and question flow.
 
-## What the agent actually supports
+## What you can do from Discord
 
-Claude Code hooks offer limited, well-defined control surfaces:
+| Action | How | Claude Code mechanism |
+|---|---|---|
+| **Approve / deny a permission** | Tap ✅ Approve / ❌ Deny, or reply `approve`, `deny`, or a reason (`deny: use npm ci`); the reason is shown to Claude | `PermissionRequest` hook returns `decision.behavior = allow/deny` (+ `message`) |
+| **Answer a question** | Tap an option (single choice) or use the menu (multiple choice); or reply with a number, a label, or your own answer | `PreToolUse(AskUserQuestion)` returns `permissionDecision: allow` with `updatedInput.answers` |
+| **Reply to continue** | Reply to a ✅ finished / ⏳ waiting / ⚠️ failed ping with new instructions | A background `Stop` hook with `asyncRewake` exits 2; Claude wakes with your text |
+| **Commands** | `status`, `away`, `back`, `help` | handled by the daemon |
 
-- `PermissionRequest` hooks may return `{"hookSpecificOutput": {"hookEventName":
-  "PermissionRequest", "decision": {"behavior": "allow" | "deny", …}}}`, but only while the hook
-  process is still running, i.e. the hook would have to **block** until a remote answer arrives
-  (within its timeout).
-- `PreToolUse` for `AskUserQuestion` may return `updatedInput` with `answers` to answer a
-  question programmatically, again only synchronously from the hook.
-- There is no documented API to inject free-form instructions into a running interactive
-  session. Free-form remote instructions would require starting a new `claude -p --resume`
-  process, which is a different and more dangerous capability.
+Replies are matched to the right session: replying to a specific notification targets that
+session; a plain message goes to the most recent open prompt.
 
-Any remote feature must map to one of these documented mechanisms; AgentPing must not pretend
-to support anything else.
+## Setup
 
-## Principles
+1. Create a bot: <https://discord.com/developers/applications> → **New Application** → **Bot** →
+   **Reset Token** (copy it).
+2. **Bot → Privileged Gateway Intents → Message Content Intent**: on.
+3. **OAuth2 → URL Generator**: scope `bot`; permissions *View Channels, Send Messages, Read
+   Message History, Embed Links*; open the URL and add the bot to your server.
+4. Run:
 
-1. **Off by default**, enabled per agent and per action type in config, with a CLI warning.
-2. **Providers are not identities.** A Discord or Telegram message is not proof of who sent it.
-   Remote actions require a separate authentication step (for example a per-device key pair
-   enrolled locally, or a TOTP code), not just "a message came from the right chat".
-3. **Short-lived, single-use action tokens.** Each actionable notification carries a random
-   token bound to (event id, allowed actions, expiry ≤ hook timeout). Tokens are stored hashed,
-   consumed atomically, and replay is rejected.
-4. **Allow-list of actions**: `deny` is always safe; `allow` limited to tool categories the user
-   opts into (never blanket); question answers limited to the offered options.
-5. **No shell, ever.** No free-form command execution from messaging providers.
-6. **Confirmation for sensitive actions** and a full local audit log (who, what, when, result),
-   without secrets.
-7. **Fail closed.** Timeout or any validation error falls back to the normal local prompt.
+   ```sh
+   agentping setup discord-bot                 # hidden prompt, or --from-env DISCORD_BOT_TOKEN
+   ```
 
-## Sketch
+   It validates the token, uses your webhook's channel (or `--channel-id`), and **pairs your
+   account**: you type a one-time code like `AP-123456` in the channel and only that Discord
+   account is allowed to answer. It then enables `[remote]`, re-installs the Claude Code hooks
+   with suitable timeouts and restarts the daemon.
+5. Keep the daemon running (`agentping daemon start` or `agentping daemon install`). It holds the
+   Discord Gateway connection; no public URL or port forwarding is needed.
 
-```text
-PermissionRequest hook ──(blocking, ≤ timeout)──▶ daemon: create ActionRequest {id, event, allowed, expires}
-                                                   │
-                     notification with deep link ◀─┘  (no secrets in the link; token hashed at rest)
-                                                   │
-           authenticated reply (signed, nonce) ──▶ daemon verifies device key + token + expiry
-                                                   │
-hook returns decision JSON ◀───────────────────────┘  or exits silently on timeout → normal prompt
+## When prompts go to Discord
+
+Permission requests and questions block Claude while the hook waits for your answer, so by
+default (`route = "when_away"`) they are routed to Discord only when you are away:
+
+- after `agentping away` (or sending `away` in Discord), until `agentping back` / `back`;
+- or automatically when no prompt has been typed locally for `away_after_minutes` (default 5).
+
+With `route = "always"`, every permission request and question is sent to Discord as well.
+If nobody answers within `decision_timeout_minutes` (default 10), the hook gives up and Claude's
+normal local prompt takes over. Typing in the terminal, finishing the turn or ending the session
+withdraws open prompts; the Discord message is updated accordingly.
+
+"Reply to continue" never blocks: after each turn a background listener waits up to
+`reply_timeout_minutes` (default 60) and is replaced by the next turn's listener.
+
+## Security model
+
+- **Off by default.** Requires `remote.enabled = true`, a bot token in the OS credential store,
+  a channel id and at least one allow-listed Discord user id.
+- **Providers are not identities.** Only messages and button presses from allow-listed user ids,
+  in the configured channel, are accepted; everything else is ignored (and logged). Pairing proves
+  control of both the terminal and the Discord account.
+- **Single-use, expiring prompts.** Each prompt has a random 128-bit id embedded in its buttons;
+  it is resolved atomically exactly once, and late or replayed answers are rejected.
+- **Nothing beyond the hook API.** The only effects are a permission decision, question answers,
+  or a message to Claude. No commands are executed by AgentPing.
+- **Audit trail.** Every remote answer is stored (who, what, when) in the `interactions` table and
+  logged.
+- Free-text replies are capped at 4,000 characters and passed to Claude labelled as a remote
+  reply.
+
+## Configuration
+
+```toml
+[remote]
+enabled = true
+discord_channel_id = "123456789012345678"
+discord_user_ids = ["987654321098765432"]
+continue_replies = true
+permissions = true
+questions = true
+route = "when_away"         # or "always"
+away_after_minutes = 5      # 0 = only explicit `away`
+reply_timeout_minutes = 60
+decision_timeout_minutes = 10
 ```
 
-Inbound replies need a reachable endpoint; for a local-first tool this likely means polling a
-provider (Telegram `getUpdates`) rather than exposing a public webhook.
+After changing `[remote]`, run `agentping setup claude` (hook timeouts depend on it) and
+`agentping daemon restart`.
+
+## Limitations
+
+- The daemon must be running; without it hooks behave as notify-only.
+- Whether Claude Code shows its local permission/question dialog while a waiting hook runs is not
+  documented; this is why routing defaults to "only when away".
+- A reply to continue reaches Claude as a system reminder (that is how `asyncRewake` delivers
+  output), not as a typed user message; Claude treats it as your next instruction.
+- `-p` (headless) runs end immediately, so reply-to-continue applies to interactive sessions.
+- Interrupting a running turn from Discord is not possible through the hooks API.

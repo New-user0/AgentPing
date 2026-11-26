@@ -10,17 +10,19 @@ Advisories) on this repository rather than in public issues.
 
 ## Threat model and guarantees
 
-### AgentPing never acts on the agent's behalf
+### AgentPing never acts on its own
 
-- Hooks only **observe**. The hook process writes nothing to stdout, never returns a
-  permission decision, and always exits 0, so it cannot approve, deny or block anything.
-- There is no remote approval, remote reply, or command execution in this version. Messaging
-  providers are treated as **untrusted** output channels only. See
-  [docs/remote-interaction.md](docs/remote-interaction.md) for the opt-in design.
+- By default hooks only **observe**: they write nothing to stdout and exit 0, so they cannot
+  approve, deny or block anything. A decision is only ever returned when *you* made it.
+- With two-way control enabled (opt-in), hooks can return exactly three things, all defined by
+  the Claude Code hooks API: a permission decision, answers to a question, or a message to Claude.
+  Only paired, allow-listed Discord user ids are accepted; prompts carry random single-use ids,
+  expire, and are resolved atomically once (replays rejected); answers are audit-logged. Nothing
+  is executed by AgentPing itself. See [docs/remote-interaction.md](docs/remote-interaction.md).
 
 ### Secrets
 
-- Discord webhook URLs and Telegram bot tokens are stored in the OS credential store (Windows
+- Discord webhook URLs, the Discord bot token and Telegram bot tokens are stored in the OS credential store (Windows
   Credential Manager, macOS Keychain, Secret Service). They are never written to
   `config.toml`, the SQLite database, event history or logs.
 - A plaintext `secrets.toml` is used only when the user passes `--insecure-store` and the

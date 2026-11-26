@@ -93,6 +93,26 @@ min_severity = "urgent"  # events at or above still notify
 Severities: `low` < `normal` < `high` < `urgent`. Defaults: permission requests, questions and
 failures are `high`; completions and notifications `normal`; idle and session events `low`.
 
+## `[remote]`
+
+Two-way control through a Discord bot (opt-in). Set up with `agentping setup discord-bot`; see
+[remote-interaction.md](remote-interaction.md).
+
+| Key | Default | Description |
+|---|---|---|
+| `enabled` | `false` | Master switch |
+| `discord_channel_id` | unset | Channel the bot posts prompts in and reads replies from |
+| `discord_user_ids` | `[]` | Discord accounts allowed to answer |
+| `continue_replies` | `true` | Reply to finished/idle pings to give Claude new instructions |
+| `permissions` | `true` | Approve/deny permission requests from Discord |
+| `questions` | `true` | Answer `AskUserQuestion` prompts from Discord |
+| `route` | `"when_away"` | `"when_away"` or `"always"`: when permissions/questions go to Discord |
+| `away_after_minutes` | `5` | Away after this long without a locally typed prompt (0 = only `agentping away`) |
+| `reply_timeout_minutes` | `60` | How long a finished session listens for a reply (1-1440) |
+| `decision_timeout_minutes` | `10` | How long a permission/question waits before the local prompt takes over (1-60) |
+
+Re-run `agentping setup claude` after changing it (hook timeouts depend on these values).
+
 ## `[[rules]]`
 
 Rules are evaluated **in order; the first matching rule decides**. Every match field is

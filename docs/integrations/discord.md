@@ -33,3 +33,8 @@ enforced before sending.
 
 `agentping providers --check` / `doctor` perform a `GET` on the webhook (returns its name without
 posting a message).
+
+## Two-way (bot)
+
+Webhooks can only post. To answer prompts and reply from Discord, add a bot with
+`agentping setup discord-bot`; see [remote-interaction.md](../remote-interaction.md).

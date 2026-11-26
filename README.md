@@ -21,8 +21,12 @@ Claude Code ──hook──▶ agentping hook ──loopback──▶ agentping
                                                        rules, retries)
 ```
 
-> Status: **v0.1.0, first milestone.** Claude Code + Discord + Telegram work end to end on
-> Windows, macOS and Linux. WhatsApp, a dashboard and remote replies are designed for but **not
+**Two-way (opt-in):** approve or deny permissions, answer Claude's questions, and reply to a
+finished session with new instructions, right from Discord. See
+[Two-way control](#two-way-control-from-discord).
+
+> Status: **v0.2.0.** Claude Code + Discord + Telegram work end to end on Windows, macOS and
+> Linux, plus two-way control through a Discord bot. WhatsApp and a dashboard are **not
 > implemented** yet; see the [roadmap](#roadmap).
 
 ---
@@ -35,6 +39,7 @@ Claude Code ──hook──▶ agentping hook ──loopback──▶ agentping
 - [Discord setup](#discord-setup)
 - [Telegram setup](#telegram-setup)
 - [Claude Code integration](#claude-code-integration)
+- [Two-way control from Discord](#two-way-control-from-discord)
 - [CLI usage](#cli-usage)
 - [Configuration](#configuration)
 - [Troubleshooting](#troubleshooting)
@@ -148,12 +153,37 @@ Notes:
 - AgentPing **never approves or answers anything**. It only observes. See
   [docs/integrations/claude-code.md](docs/integrations/claude-code.md).
 
+## Two-way control from Discord
+
+```text
+🔐 Claude Code wants to use Bash · backend-api        [✅ Approve] [❌ Deny]
+   Run the test suite
+   npm test -- --watch=false
+```
+
+| From Discord | Effect in Claude Code |
+|---|---|
+| Tap **Approve** / **Deny**, or reply `deny: use npm ci` | permission decision (the reason is shown to Claude) |
+| Tap an option / pick from a menu / reply with your own answer | answers Claude's question |
+| Reply to a ✅ finished or ⏳ waiting ping | Claude wakes up and continues with your instructions |
+| `status` · `away` · `back` · `help` | sessions overview · route prompts to Discord or not |
+
+```sh
+agentping setup discord-bot     # bot token + pairing with a one-time code
+agentping away                  # send permission requests & questions to Discord now
+agentping back                  # keep them in the terminal again
+```
+
+Off by default; only your paired Discord account can answer; every prompt is single-use and
+expires; no shell access. Details and setup steps: [docs/remote-interaction.md](docs/remote-interaction.md).
+
 ## CLI usage
 
 ```text
 agentping                    overview and next steps
 agentping init               guided setup
-agentping setup <claude|discord|telegram|whatsapp>
+agentping setup <claude|discord|discord-bot|telegram|whatsapp>
+agentping away | back          route prompts to Discord while you're away
 agentping test [discord|telegram]
 agentping status [--json]    daemon, active sessions, delivery counters
 agentping doctor [--offline] diagnostics with fixes
@@ -251,7 +281,8 @@ Logs: `agentping logs -f`.
   `Host` or any browser `Origin` are rejected. There are no command-execution endpoints.
 - Notification text is redacted for common secret formats and truncated. Paths are hidden by
   default. Prompts you type are never captured.
-- Remote approval/answers are **not implemented** and will be opt-in when they are.
+- Two-way control is opt-in, limited to paired Discord accounts, single-use and expiring, and
+  only uses the hooks API (permission decisions, question answers, messages to Claude).
 
 Details: [SECURITY.md](SECURITY.md) and `agentping privacy`.
 
@@ -266,7 +297,8 @@ A Cargo workspace compiled into one binary:
 | `agentping-rules` | Deterministic notification rules |
 | `agentping-notifiers` | `NotificationProvider` trait, rendering/templates, Discord, Telegram |
 | `agentping-agents` | Agent adapters (Claude Code hooks) and hook installer |
-| `agentping-daemon` | Pipeline engine, delivery worker, loopback API, service registration |
+| `agentping-remote` | Discord bot: Gateway client, interactive prompts, reply parsing |
+| `agentping-daemon` | Pipeline engine, delivery worker, remote service, loopback API, service registration |
 | `agentping-cli` | The `agentping` binary |
 
 See [docs/architecture.md](docs/architecture.md) for decisions and trade-offs.
@@ -276,8 +308,7 @@ See [docs/architecture.md](docs/architecture.md) for decisions and trade-offs.
 - **Next:** prebuilt release binaries and install scripts, Homebrew tap, more agent adapters
   (via the `AgentAdapter` trait), richer per-provider routing.
 - **Planned:** WhatsApp via the official Cloud API ([requirements](docs/integrations/whatsapp.md)),
-  a lightweight local dashboard on the existing `/v1` API, and opt-in, authenticated remote
-  replies ([design](docs/remote-interaction.md)).
+  a lightweight local dashboard on the existing `/v1` API, two-way control over Telegram.
 
 See [CHANGELOG.md](CHANGELOG.md) for what shipped.
 

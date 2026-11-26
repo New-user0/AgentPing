@@ -20,12 +20,14 @@ event-specific fields. AgentPing registers:
 | `SessionEnd` | — | Session tracking (`reason`); timeout 5 s because SessionEnd hooks share a short budget |
 | `UserPromptSubmit` | — | Marks the session "working". The `prompt` field is ignored |
 
-### Why not the `PermissionRequest` hook?
+### `PermissionRequest` vs. `permission_prompt`
 
-`PermissionRequest` fires the moment a permission dialog appears, even if you are at the
-keyboard. The `Notification` hook's `permission_prompt` type fires only after the prompt has been
-waiting ~6 s, which is the "you are away" signal AgentPing wants, and using both would create
-duplicates. AgentPing never returns a decision from any hook.
+`PermissionRequest` fires the moment a permission dialog is about to appear; the `Notification`
+hook's `permission_prompt` type fires only after the prompt has waited ~6 s. AgentPing uses
+`permission_prompt` as the phone ping (the "you are away" signal) and the `PermissionRequest`
+payload to add the exact command/file/diff to it. With two-way control and you away, the
+`PermissionRequest` hook also waits for your Discord decision. AgentPing never returns a decision
+you did not make.
 
 ### Delivery behaviour
 

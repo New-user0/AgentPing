@@ -3,20 +3,20 @@ resolver = "2"
 members = ["crates/*"]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/New-user0/AgentPing"
 rust-version = "1.85"
 
 [workspace.dependencies]
-agentping-core = { path = "crates/agentping-core", version = "0.1.0" }
-agentping-storage = { path = "crates/agentping-storage", version = "0.1.0" }
-agentping-rules = { path = "crates/agentping-rules", version = "0.1.0" }
-agentping-notifiers = { path = "crates/agentping-notifiers", version = "0.1.0" }
-agentping-agents = { path = "crates/agentping-agents", version = "0.1.0" }
-agentping-daemon = { path = "crates/agentping-daemon", version = "0.1.0" }
-agentping-remote = { path = "crates/agentping-remote", version = "0.1.0" }
+agentping-core = { path = "crates/agentping-core", version = "0.2.0" }
+agentping-storage = { path = "crates/agentping-storage", version = "0.2.0" }
+agentping-rules = { path = "crates/agentping-rules", version = "0.2.0" }
+agentping-notifiers = { path = "crates/agentping-notifiers", version = "0.2.0" }
+agentping-agents = { path = "crates/agentping-agents", version = "0.2.0" }
+agentping-daemon = { path = "crates/agentping-daemon", version = "0.2.0" }
+agentping-remote = { path = "crates/agentping-remote", version = "0.2.0" }
 
 anyhow = "1"
 thiserror = "2"
