@@ -1,0 +1,9 @@
+{
+  "session_id": "8a1d2c3b-0000-4000-8000-000000000001",
+  "cwd": "/home/dev/ecommerce-app/src",
+  "hook_event_name": "PostToolUse",
+  "tool_name": "AskUserQuestion",
+  "tool_use_id": "toolu_01ABCDEF",
+  "tool_input": { "questions": [] },
+  "tool_response": { "answers": { "Which payment provider should I implement?": "Stripe" } }
+}

@@ -1,0 +1,8 @@
+{
+  "session_id": "8a1d2c3b-0000-4000-8000-000000000001",
+  "cwd": "/home/dev/ecommerce-app",
+  "hook_event_name": "PreToolUse",
+  "tool_name": "Bash",
+  "tool_use_id": "toolu_02",
+  "tool_input": { "command": "npm test" }
+}

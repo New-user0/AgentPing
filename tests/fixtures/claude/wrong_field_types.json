@@ -1,0 +1,1 @@
+{ "hook_event_name": "Notification", "session_id": 42, "message": ["not", "a", "string"], "notification_type": null, "cwd": false }

@@ -1,0 +1,36 @@
+[package]
+name = "agentping-daemon"
+description = "Event pipeline, delivery worker and local API for AgentPing"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+agentping-core.workspace = true
+agentping-storage.workspace = true
+agentping-rules.workspace = true
+agentping-notifiers.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+rand.workspace = true
+hex.workspace = true
+tracing.workspace = true
+tokio.workspace = true
+axum.workspace = true
+reqwest.workspace = true
+async-trait.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+uuid.workspace = true
+
+[lints]
+workspace = true

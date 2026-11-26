@@ -1,0 +1,8 @@
+{
+  "session_id": "5f0c8b2e-3d4a-4b7e-9f1a-2c6d8e0b1a34",
+  "transcript_path": "/Users/dev/.claude/projects/x/5f0c8b2e.jsonl",
+  "cwd": "/Users/dev/backend-api",
+  "hook_event_name": "SessionStart",
+  "source": "startup",
+  "model": "claude-opus-5-5"
+}

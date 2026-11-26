@@ -1,0 +1,27 @@
+[package]
+name = "agentping-notifiers"
+description = "Notification rendering and providers (Discord, Telegram) for AgentPing"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+agentping-core.workspace = true
+async-trait.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+url.workspace = true
+regex.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tokio.workspace = true
+axum.workspace = true
+
+[lints]
+workspace = true

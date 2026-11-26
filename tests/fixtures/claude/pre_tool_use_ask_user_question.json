@@ -1,0 +1,22 @@
+{
+  "session_id": "8a1d2c3b-0000-4000-8000-000000000001",
+  "transcript_path": "/home/dev/.claude/projects/x/8a1d2c3b.jsonl",
+  "cwd": "/home/dev/ecommerce-app/src",
+  "permission_mode": "default",
+  "hook_event_name": "PreToolUse",
+  "tool_name": "AskUserQuestion",
+  "tool_use_id": "toolu_01ABCDEF",
+  "tool_input": {
+    "questions": [
+      {
+        "question": "Which payment provider should I implement?",
+        "header": "Payments",
+        "options": [
+          { "label": "Stripe", "description": "Cards and wallets, best docs" },
+          { "label": "PayPal", "description": "Familiar checkout" }
+        ],
+        "multiSelect": false
+      }
+    ]
+  }
+}

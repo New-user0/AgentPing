@@ -1,0 +1,8 @@
+{
+  "session_id": "8a1d2c3b-0000-4000-8000-000000000001",
+  "cwd": "/home/dev/ecommerce-app",
+  "hook_event_name": "Notification",
+  "message": "Something new happened",
+  "notification_type": "brand_new_type_from_the_future",
+  "some_future_field": { "nested": [1, 2, 3] }
+}

@@ -1,0 +1,9 @@
+{
+  "session_id": "5f0c8b2e-3d4a-4b7e-9f1a-2c6d8e0b1a34",
+  "transcript_path": "/Users/dev/.claude/projects/-Users-dev-backend-api/5f0c8b2e-3d4a-4b7e-9f1a-2c6d8e0b1a34.jsonl",
+  "cwd": "/Users/dev/backend-api",
+  "permission_mode": "default",
+  "hook_event_name": "Notification",
+  "message": "Claude needs your permission to use Bash",
+  "notification_type": "permission_prompt"
+}

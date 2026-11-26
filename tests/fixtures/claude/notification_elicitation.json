@@ -1,0 +1,9 @@
+{
+  "session_id": "8a1d2c3b-0000-4000-8000-000000000001",
+  "transcript_path": "/home/dev/.claude/projects/x/8a1d2c3b.jsonl",
+  "cwd": "/home/dev/ecommerce-app",
+  "hook_event_name": "Notification",
+  "title": "MCP server needs input",
+  "message": "The github server is asking for a repository name",
+  "notification_type": "elicitation_dialog"
+}
