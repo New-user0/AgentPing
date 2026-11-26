@@ -1,0 +1,42 @@
+[package]
+name = "agentping-cli"
+description = "AgentPing command-line interface: stay connected to your AI coding agents, wherever you are."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+readme = "../../README.md"
+
+[[bin]]
+name = "agentping"
+path = "src/main.rs"
+
+[dependencies]
+agentping-core.workspace = true
+agentping-storage.workspace = true
+agentping-rules.workspace = true
+agentping-notifiers.workspace = true
+agentping-agents.workspace = true
+agentping-daemon.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+clap.workspace = true
+anstream.workspace = true
+anstyle.workspace = true
+dialoguer.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+tracing-appender.workspace = true
+reqwest.workspace = true
+
+[dev-dependencies]
+assert_cmd.workspace = true
+predicates.workspace = true
+tempfile.workspace = true
+
+[lints]
+workspace = true
