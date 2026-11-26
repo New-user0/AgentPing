@@ -103,6 +103,12 @@ fn handle(agent: &str, wait_reply: bool, paths: &Paths, config: &Config) -> anyh
     if !wanted || is_continue != wait_reply {
         return Ok(0);
     }
+    // A headless run (`claude -p`, SDK) would stay alive while the reply listener waits, so
+    // reply-to-continue only applies to interactive sessions. Approvals and answers still work.
+    if is_continue && headless_session() {
+        tracing::debug!("headless session: not waiting for a remote reply");
+        return Ok(0);
+    }
     let timeout_minutes = if is_continue {
         config.remote.reply_timeout_minutes
     } else {
@@ -214,4 +220,11 @@ fn store_locally(paths: &Paths, config: &Config, event: &Event) -> anyhow::Resul
         }
     }
     Ok(())
+}
+
+/// Whether the hook runs under a non-interactive Claude Code session (`-p` / SDK).
+fn headless_session() -> bool {
+    let entry = std::env::var("CLAUDE_CODE_ENTRYPOINT").unwrap_or_default();
+    let attended = std::env::var("CLAUDE_CODE_SESSION_ATTENDED").unwrap_or_default();
+    entry.starts_with("sdk") || attended == "0"
 }
